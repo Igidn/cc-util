@@ -1,0 +1,6 @@
+console/node_modules/
+console/data/
+console/.runtime/
+console/.env
+**/*.log
+.DS_Store
