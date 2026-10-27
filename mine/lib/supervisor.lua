@@ -59,7 +59,7 @@ function M.run(identity, bus)
 
     elseif role == "station_builder" then
       bus.state = "building"
-      local result, err = station_builder.run(id, bus)
+      local result, err = station_builder.run(identity, bus)
       util.log("supervisor: station_builder", result or "stopped", err or "")
       if result == "transition_to_hauler" then
         -- Builder finished the station; switch to hauler runtime.
@@ -70,7 +70,7 @@ function M.run(identity, bus)
 
     elseif role == "hauler" then
       bus.state = "hauling"
-      local result, err = hauler.run(id, bus)
+      local result, err = hauler.run(identity, bus)
       util.log("supervisor: hauler", result or "stopped", err or "")
 
     elseif role == "miner" then

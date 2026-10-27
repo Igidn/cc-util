@@ -123,9 +123,11 @@ end
 
 function M.itemDetail(slot)
   if not backend then return nil end
-  local ok, data = backend.getItemDetail(slot)
-  if not ok then return nil end
-  return data
+  local a, b = backend.getItemDetail(slot)
+  -- real CC:Tweaked returns (itemTable|nil); some mocks return (boolean, itemTable)
+  if type(a) == "table" then return a end
+  if a == true then return b end
+  return nil
 end
 
 function M.inventory()
