@@ -130,6 +130,70 @@ end
 -- Shaft digging (surface to Y10)
 ----------------------------------------------------------------------
 
+-- Drop all non-chest items into the block in front of the turtle.
+-- Used to clear debris (stone, dirt, etc.) while preserving chest items.
+local function dropDebrisFront()
+  local dropped = 0
+  for slot = 1, 16 do
+    local item = hal.itemDetail(slot)
+    if item and not (item.name and item.name:find("chest")) then
+      hal.select(slot)
+      if hal.drop() then dropped = dropped + 1 end
+    end
+  end
+  return dropped
+end
+
+-- Return to surface depot chest and drop all non-chest items there.
+-- navInstance is the turtle's current nav; surfaceY is the surface level.
+-- Saves and restores x,z,f position so the turtle can resume where it left off.
+-- Returns true if debris was dropped successfully (or no disposal needed).
+local function disposeDebris(navInstance, surfaceY)
+  local usedSlots = hal.usedSlots()
+  if usedSlots <= 12 then return true end -- no need yet
+
+  util.log("station_builder: inventory full (%d slots), disposing debris to surface depot", usedSlots)
+
+  -- Save current position
+  local saveX, saveY, saveZ, saveF = navInstance.pose.x, navInstance.pose.y, navInstance.pose.z, navInstance.pose.f
+
+  -- Ascend to surface
+  local dy = surfaceY - saveY
+  if dy > 0 then
+    for _ = 1, dy do
+      local ok, err = nav.up(navInstance, 1)
+      if not ok then
+        hal.digUp()
+        ok = nav.up(navInstance, 1)
+        if not ok then
+          util.log("station_builder: cannot ascend to surface, aborting debris disposal")
+          return false
+        end
+      end
+    end
+  end
+
+  -- Face the depot chest (behind the turtle at surface spawn)
+  nav.face(navInstance, 2) -- south
+
+  -- Drop non-chest items into the depot chest in front
+  local dropped = dropDebrisFront()
+  util.log("station_builder: dropped", dropped, "debris stacks into depot chest")
+
+  -- Return down to work level
+  if dy > 0 then
+    for _ = 1, dy do
+      local ok, err = nav.down(navInstance, 1)
+      if not ok then return false, "cannot descend" end
+    end
+  end
+
+  -- Restore facing
+  nav.face(navInstance, saveF)
+  util.log("station_builder: debris disposal complete, back at Y%d", navInstance.pose.y)
+  return true
+end
+
 local function digShaftToY10(navInstance, surfaceY, targetY)
   local currentY = navInstance.pose.y
   if currentY <= targetY then
@@ -268,70 +332,6 @@ local function placeChestDown()
     end
   end
   return false, "no chest in inventory"
-end
-
--- Drop all non-chest items into the block in front of the turtle.
--- Used to clear debris (stone, dirt, etc.) while preserving chest items.
-local function dropDebrisFront()
-  local dropped = 0
-  for slot = 1, 16 do
-    local item = hal.itemDetail(slot)
-    if item and not (item.name and item.name:find("chest")) then
-      hal.select(slot)
-      if hal.drop() then dropped = dropped + 1 end
-    end
-  end
-  return dropped
-end
-
--- Return to surface depot chest and drop all non-chest items there.
--- navInstance is the turtle's current nav; surfaceY is the surface level.
--- Saves and restores x,z,f position so the turtle can resume where it left off.
--- Returns true if debris was dropped successfully (or no disposal needed).
-local function disposeDebris(navInstance, surfaceY)
-  local usedSlots = hal.usedSlots()
-  if usedSlots <= 12 then return true end -- no need yet
-
-  util.log("station_builder: inventory full (%d slots), disposing debris to surface depot", usedSlots)
-
-  -- Save current position
-  local saveX, saveY, saveZ, saveF = navInstance.pose.x, navInstance.pose.y, navInstance.pose.z, navInstance.pose.f
-
-  -- Ascend to surface
-  local dy = surfaceY - saveY
-  if dy > 0 then
-    for _ = 1, dy do
-      local ok, err = nav.up(navInstance, 1)
-      if not ok then
-        hal.digUp()
-        ok = nav.up(navInstance, 1)
-        if not ok then
-          util.log("station_builder: cannot ascend to surface, aborting debris disposal")
-          return false
-        end
-      end
-    end
-  end
-
-  -- Face the depot chest (behind the turtle at surface spawn)
-  nav.face(navInstance, 2) -- south
-
-  -- Drop non-chest items into the depot chest in front
-  local dropped = dropDebrisFront()
-  util.log("station_builder: dropped", dropped, "debris stacks into depot chest")
-
-  -- Return down to work level
-  if dy > 0 then
-    for _ = 1, dy do
-      local ok, err = nav.down(navInstance, 1)
-      if not ok then return false, "cannot descend" end
-    end
-  end
-
-  -- Restore facing
-  nav.face(navInstance, saveF)
-  util.log("station_builder: debris disposal complete, back at Y%d", navInstance.pose.y)
-  return true
 end
 
 -- Navigate to a specific (x, z) position at headroom level (Y+1),
