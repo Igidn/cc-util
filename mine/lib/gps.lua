@@ -79,7 +79,12 @@ function M.syncPose(pose, hal, detectFacing)
     if facing then
       pose.f = facing
     else
-      return nil, "facing detection failed: " .. tostring(err)
+      -- Assume the turtle is placed facing north (f=0).
+      -- Facing detection requires moving forward one block, which fails
+      -- if there's a block ahead. Default to north so the turtle can still
+      -- operate; it can correct facing later if needed.
+      pose.f = 0
+      util.log("gps: facing detection failed (" .. tostring(err) .. "), assuming north (f=0)")
     end
   end
 
