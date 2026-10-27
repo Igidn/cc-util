@@ -61,9 +61,9 @@ local CHEST_LAYOUT = {
 }
 
 local CHEST_COUNT = #CHEST_LAYOUT
--- Depth below surface to dig the shaft (matches BASE_Y - TOP_WORLD_Y = 10).
--- The room is built at surfaceY - SHAFT_DEPTH.
-local SHAFT_DEPTH = 10
+-- Target world Y coordinate for the mine room floor.
+-- The station builder digs from surface down to this Y level.
+local TARGET_Y = 10
 
 ----------------------------------------------------------------------
 -- GPS
@@ -500,14 +500,13 @@ function M.run(id, bus)
   end
 
   local surfaceY = (base and base.y) or (bus.pose and bus.pose.y) or 0
-  local targetY = surfaceY - SHAFT_DEPTH
-  util.log(("station_builder: surface at Y%d, digging shaft down %d blocks to room at Y%d"):format(surfaceY, SHAFT_DEPTH, targetY))
+  util.log(("station_builder: surface at Y%d, digging shaft down to Y%d"):format(surfaceY, TARGET_Y))
 
   -- 4. Create nav instance from dock-zeroed base pose (real world coordinates)
   local navInstance = nav.new(hal, nil, 0, base or { x = 0, y = surfaceY, z = 0, f = 0 }, true)
 
-  -- 5. Dig shaft down to targetY
-  if not digShaftToY10(navInstance, surfaceY, targetY) then
+  -- 5. Dig shaft down to TARGET_Y
+  if not digShaftToY10(navInstance, surfaceY, TARGET_Y) then
     return nil, "shaft dig failed"
   end
 
