@@ -1,5 +1,6 @@
 -- GPS wrapper for ComputerCraft. Provides locate() with timeout and
 -- facing detection via movement delta.
+local util = require("lib.util")
 local M = {}
 
 local DEFAULT_TIMEOUT = 2
