@@ -259,12 +259,16 @@ local function digRoom12x12(navInstance, surfaceY)
   end
 
   -- Clear 12 rows in Z direction, 12 blocks in X direction at headroom level.
+  -- Serpentine pattern: even rows head east, odd rows head west, so the turtle
+  -- stays inside the 12x12 bounds. (Always facing east marched diagonally out of
+  -- the room and dug a line instead of a room: 12 blocks east, turn right/south,
+  -- 1 block, turn left/east, 12 blocks east again.)
   local cleared = 0
   for row = 0, 11 do
-    local z = startZ + row
-    nav.face(navInstance, 1) -- east
+    local eastRow = (row % 2 == 0)
+    nav.face(navInstance, eastRow and 1 or 3) -- east on even rows, west on odd rows
     for col = 0, 11 do
-      local x = startX + col
+      local x = startX + (eastRow and col or (11 - col))
       local data = hal.inspect()
       if data and not hal.passable(data) then
         hal.dig()
@@ -283,19 +287,34 @@ local function digRoom12x12(navInstance, surfaceY)
       end
     end
     if row < 11 then
+      -- Step south to the next row; dig the block ahead in case it is stone
       nav.face(navInstance, 2) -- south
+      local data = hal.inspect()
+      if data and not hal.passable(data) then
+        hal.dig()
+      end
       nav.forward(navInstance, 1)
     end
   end
 
   util.log("station_builder: headroom cleared,", cleared, "blocks checked")
 
-  -- Return down to floor level.
-  nav.down(navInstance, 1)
+  -- Return to the shaft bottom (start position) at headroom level so roomOrigin
+  -- lines up with the chest layout origin. Do not move down to the floor: the
+  -- stone floor stays solid so chests rest on it.
+  local dx = startX - navInstance.pose.x
+  local dz = startZ - navInstance.pose.z
+  if dx > 0 then nav.face(navInstance, 1) elseif dx < 0 then nav.face(navInstance, 3) end
+  if dx ~= 0 then
+    local ok, err = nav.forward(navInstance, math.abs(dx))
+    if not ok then return nil, "return to shaft start (x) blocked: " .. tostring(err) end
+  end
+  if dz > 0 then nav.face(navInstance, 2) elseif dz < 0 then nav.face(navInstance, 0) end
+  if dz ~= 0 then
+    local ok, err = nav.forward(navInstance, math.abs(dz))
+    if not ok then return nil, "return to shaft start (z) blocked: " .. tostring(err) end
+  end
 
-  -- Also clear the floor level of obstructions (keep stone floor, just remove non-stone).
-  -- The floor at Y level stays as-is (chests need solid floor beneath them).
-  -- Just make sure the center area is clear for movement.
   util.log("station_builder: room floor at Y%d ready", roomY)
   return true
 end
@@ -385,6 +404,16 @@ local function placeChestAt(navInstance, targetX, targetZ, floorY)
     for _ = 1, -dz do
       local ok, err = nav.step(navInstance, "forward")
       if not ok then return nil, "north blocked at z=" .. targetZ end
+    end
+  end
+
+  -- Make sure the floor block below is air so the chest can be placed at
+  -- floor level (it will rest on the solid stone beneath the floor).
+  local below = hal.inspectDown()
+  if below and not hal.passable(below) then
+    local ok, err = hal.digDown()
+    if not ok then
+      return nil, ("floor dig failed at %d,%d: %s"):format(targetX, targetZ, tostring(err))
     end
   end
 
@@ -569,5 +598,8 @@ end
 
 M.CHEST_LAYOUT = CHEST_LAYOUT
 M.CHEST_COUNT = CHEST_COUNT
+-- Exported for tests/simulator
+M.digRoom12x12 = digRoom12x12
+M.placeChestAt = placeChestAt
 
 return M

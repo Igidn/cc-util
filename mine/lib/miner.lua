@@ -322,17 +322,20 @@ end
 
 local function travelTo(trip, legs, progress, bus)
   local dummy = { ores = 0 }
+  local shaftTapeLen
   for i = 1, progress.leg - 1 do
     local leg = legs[i]
     local ok, err = executeLeg(trip, leg, leg.length, false, bus, dummy)
     if not ok then return nil, err end
+    if i == 2 then shaftTapeLen = tape.length(trip.tape) end
   end
   if progress.leg <= #legs then
     local leg = legs[progress.leg]
     local ok, err = executeLeg(trip, leg, progress.offset, false, bus, dummy)
     if not ok then return nil, err end
+    if progress.leg == 2 then shaftTapeLen = tape.length(trip.tape) end
   end
-  return true
+  return true, nil, shaftTapeLen
 end
 
 local function mine(trip, legs, progress, snap, mission, budget, bus)
@@ -429,9 +432,6 @@ function M.run(mission, bus)
     if fetched then chests = fetched end
     util.log("miner: loaded", #chests, "chests for station", stationId)
   end
-
-  -- Shaft descent moves: staging (north) + down leg to room level.
-  local shaftMoves = spec.staging + (-spec.startY)
 
   -- Check GPS availability at startup
   local useGps = gps.available(1)
@@ -532,7 +532,29 @@ function M.run(mission, bus)
     save(snap, mission, trip, true)
 
     -- Travel to the frontier (replays plan including shaft descent).
-    local tok, terr = travelTo(trip, legs, snap.progress, bus)
+    -- travelTo also returns the tape length at shaft bottom (after legs 1-2:
+    -- staging + down), which includes turn ops from nav.face(). This is needed
+    -- for retraceTo() to return to the exact shaft-bottom position.
+    local tok, terr, shaftTapeLen = travelTo(trip, legs, snap.progress, bus)
+    if not shaftTapeLen then
+      -- Fresh mission: travelTo didn't replay legs 1-2. Compute tape length at
+      -- shaft bottom analytically from legs 1-2 (staging + down), including
+      -- turn ops from nav.face().
+      shaftTapeLen = 0
+      if #legs >= 2 then
+        local f = base.f
+        local leg1 = legs[1]
+        if leg1.kind == "line" then
+          shaftTapeLen = shaftTapeLen + #pose.turnOps(f, leg1.dir) + leg1.length
+          f = leg1.dir
+        end
+        local leg2 = legs[2]
+        if leg2.kind == "down" then
+          shaftTapeLen = shaftTapeLen + leg2.length
+        end
+      end
+    end
+
     if not tok then
       -- Failed underground: return to surface and release lock.
       local homeOK, homeErr = nav.retraceAll(trip)
@@ -563,7 +585,7 @@ function M.run(mission, bus)
     local mined, merr = mine(trip, legs, snap.progress, snap, mission, spec.maxTripBlocks, bus)
     if not mined then
       -- Return to shaft bottom, deposit/refuel, then ascend and release lock.
-      local retOK, retErr = nav.retraceTo(trip, shaftMoves)
+      local retOK, retErr = nav.retraceTo(trip, shaftTapeLen)
       if retOK then
         depositItemsDown()
         refuelFromAbove()
@@ -593,7 +615,7 @@ function M.run(mission, bus)
     end
 
     -- Return to shaft bottom (retrace all mining moves, keep shaft descent on tape).
-    local retOK, retErr = nav.retraceTo(trip, shaftMoves)
+    local retOK, retErr = nav.retraceTo(trip, shaftTapeLen)
     if retOK then
       -- Deposit all carried items into the storage chest below.
       local dropped = depositItemsDown()

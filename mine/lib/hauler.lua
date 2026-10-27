@@ -20,7 +20,8 @@ local EVACUATE_TARGET_FILL = 12   -- evacuate until fill drops to ~3/8 (12/32)
 
 -- Hauler wait position inside the station (relative to station anchor).
 -- The hauler parks here between jobs so it's not blocking the shaft.
-local HAULER_WAIT_POS = { x = 2, y = 10, z = 2, f = 0 }
+-- Y is set to surfaceY at runtime so the hauler stays at the surface.
+local HAULER_WAIT_POS = { x = 2, z = 2, f = 0 }
 
 ----------------------------------------------------------------------
 -- GPS
@@ -344,7 +345,9 @@ function M.run(id, bus)
   -- Park at hauler wait position inside the station
   local function parkAtWaitPosition(navInstance, surfaceY)
     -- Move to wait position (simplified: direct move)
-    local wx, wy, wz, wf = HAULER_WAIT_POS.x, HAULER_WAIT_POS.y, HAULER_WAIT_POS.z, HAULER_WAIT_POS.f
+    -- Y stays at surfaceY so we don't dig down through the ground.
+    local wx, wz, wf = HAULER_WAIT_POS.x, HAULER_WAIT_POS.z, HAULER_WAIT_POS.f
+    local wy = surfaceY
     nav.face(navInstance, wf)
     -- Move in X then Z (simplified pathfinding)
     local dx = wx - navInstance.pose.x
@@ -394,7 +397,7 @@ function M.run(id, bus)
       end
 
       -- Return to wait position after job
-      parkAtWaitPosition()
+      parkAtWaitPosition(navInstance, surfaceY)
     else
       -- No pending requests; check storage fill level and evacuate if needed
       local fill = getStationFill(tunnel, stationId)

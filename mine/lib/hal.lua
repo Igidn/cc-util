@@ -168,6 +168,11 @@ function M.drop()
   return backend.drop()
 end
 
+function M.placeDown()
+  if not backend then return false, "no turtle backend" end
+  return backend.placeDown()
+end
+
 function M.suckUp()
   if not backend then return false end
   return backend.suckUp()
