@@ -522,9 +522,11 @@ function M.run(id, bus)
   local floorY = navInstance.pose.y
   util.log(("station_builder: shaft bottom at Y%d (floor level)"):format(floorY))
 
-  -- Acquire shaft lock for the room work
-  if not shaft.acquire(tunnel, stationId, turtleId, "station_build") then
-    return nil, "could not acquire shaft lock"
+  -- Acquire shaft lock for the room work (non-critical for single turtle).
+  -- If the HTTP request fails, proceed without the lock.
+  local acquired = shaft.acquire(tunnel, stationId, turtleId, "station_build")
+  if not acquired then
+    util.log("station_builder: could not acquire shaft lock, proceeding without lock")
   end
 
   -- 6. Dig 12x12 room at floorY (two blocks tall: floor + headroom)
