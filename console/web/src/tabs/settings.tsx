@@ -14,6 +14,7 @@ import {
   ShieldAlert,
   TerminalSquare,
   TriangleAlert,
+  UserPlus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -298,6 +299,18 @@ export function SettingsTab() {
                 <span className="text-muted-foreground">$ </span>
                 {install.split("\n")[1]}
               </pre>
+              <div className="mt-3 flex items-center gap-2 border-t border-border/60 pt-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    window.location.hash = "deployment";
+                  }}
+                >
+                  <UserPlus data-icon="inline-start" />
+                  Assign turtle roles
+                </Button>
+              </div>
             </div>
             <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">
               The turtle needs a wireless or wired modem and a path to the console host. The

@@ -55,7 +55,7 @@ export function register(body: unknown):
     id,
     secretHash: hashSecret(secret),
     stationId: station.id,
-    role: "miner",
+    role: "unassigned",
     computerId: typeof input.computerId === "number" ? input.computerId : undefined,
     label: typeof input.label === "string" ? input.label : undefined,
     createdAt: Date.now(),
