@@ -1,10 +1,8 @@
--- Dock re-zero fixture. Build a 1x1 alcove with:
---   * a solid floor (an output chest works),
---   * a wall behind the turtle (south when facing north),
---   * a wall to its left (west when facing north).
--- The turtle faces north at the end. This removes all accumulated pose error
--- without GPS at the start of every trip.
+-- Dock re-zero fixture. Uses GPS for absolute position and facing when available,
+-- falls back to physical fixture (bumping into walls) when GPS is unavailable.
+local util = require("lib.util")
 local pose = require("lib.pose")
+local gps = require("lib.gps")
 
 local M = {}
 
@@ -31,10 +29,20 @@ local function moveUntilBlocked(hal, op, limit)
 end
 
 --- @param base table pose to assign after the fixture is found
+--- @param hal HAL instance
 function M.zero(hal, base)
   base = base or pose.new(0, 0, 0, 0)
 
-  local ok, err = moveUntilBlocked(hal, "down", MAX_TRAVEL)
+  -- Try GPS first
+  local ok, err = gps.syncPose(base, hal, true)
+  if ok then
+    return pose.copy(base)
+  end
+
+  util.log("dock: GPS zero failed (" .. tostring(err) .. "), falling back to physical fixture")
+
+  -- Fall back to physical fixture
+  ok, err = moveUntilBlocked(hal, "down", MAX_TRAVEL)
   if not ok then return nil, err end
 
   ok, err = moveUntilBlocked(hal, "back", MAX_TRAVEL)

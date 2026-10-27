@@ -4,16 +4,32 @@ local pose = require("lib.pose")
 local tape = require("lib.tape")
 local safety = require("lib.safety")
 local state = require("lib.state")
+local gps = require("lib.gps")
 
 local M = {}
 
-function M.new(hal, tripTape, reserve, startPose)
+function M.new(hal, tripTape, reserve, startPose, useGps)
   return {
     hal = hal,
     tape = tripTape or tape.new(),
     reserve = reserve or 0,
     pose = startPose or pose.new(0, 0, 0, 0),
+    useGps = useGps and true or false,
+    gpsSyncCounter = 0,
   }
+end
+
+local function maybeSyncGps(nav)
+  if not nav.useGps then return true end
+  nav.gpsSyncCounter = nav.gpsSyncCounter + 1
+  -- Sync every 16 moves to avoid GPS spam
+  if nav.gpsSyncCounter % 16 ~= 0 then return true end
+  local ok, err = gps.syncPose(nav.pose, nav.hal, false)
+  if not ok then
+    -- GPS failed; log but continue with dead reckoning
+    return true, "gps sync failed: " .. tostring(err)
+  end
+  return true
 end
 
 --- A translation: spends one fuel and adds one tape entry.
@@ -32,6 +48,7 @@ function M.step(nav, op)
   pose.apply(nav.pose, op)
   tape.push(nav.tape, op)
   state.commit(op)
+  maybeSyncGps(nav)
   return true
 end
 
@@ -110,6 +127,7 @@ function M.retraceOne(nav)
   pose.apply(nav.pose, inv)
   tape.pop(nav.tape)
   state.commitRetrace(inv)
+  maybeSyncGps(nav)
   return true
 end
 

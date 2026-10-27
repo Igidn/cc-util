@@ -17,6 +17,7 @@ local state = require("lib.state")
 local hal = require("lib.hal")
 local nav = require("lib.nav")
 local dock = require("lib.dock")
+local gps = require("lib.gps")
 
 local M = {}
 
@@ -291,12 +292,12 @@ local function returnHome(trip, snap, mission, bus)
   return true
 end
 
-local function recover(snap, mission, bus)
+local function recover(snap, mission, bus, useGps)
   if not snap.tripActive then return true end
 
   if tape.length(snap.tape) > 0 then
     util.log("miner: recovering interrupted trip,", tape.length(snap.tape), "ops")
-    local trip = nav.new(hal, snap.tape, mission.spec.reserve, snap.pose)
+    local trip = nav.new(hal, snap.tape, mission.spec.reserve, snap.pose, useGps)
     local ok, err = nav.retraceAll(trip)
     if not ok then
       send(bus, { type = "event", kind = "recovery_failed", data = { error = err } })
@@ -330,6 +331,23 @@ function M.run(mission, bus)
   spec.maxTripBlocks = math.min(spec.maxTripBlocks, 2000)
   spec.maxVeinBlocks = math.min(spec.maxVeinBlocks, 64)
   spec.reserve = math.max(spec.reserve, 16)
+
+  -- Check GPS availability at startup
+  local useGps = gps.available(1)
+  if useGps then
+    util.log("miner: GPS available, using absolute positioning")
+    -- Try to sync initial pose from GPS
+    local initPose = pose.copy(spec.base)
+    local ok, err = gps.syncPose(initPose, hal, true)
+    if ok then
+      util.log(("miner: GPS position: x=%d y=%d z=%d f=%d"):format(initPose.x, initPose.y, initPose.z, initPose.f))
+      spec.base = initPose
+    else
+      util.log("miner: GPS sync failed (" .. tostring(err) .. "), using spec base")
+    end
+  else
+    util.log("miner: GPS unavailable, using dead reckoning with dock zeroing")
+  end
 
   local legs = plan.build(spec)
   if #legs == 0 then return nil, "empty plan" end
@@ -368,7 +386,7 @@ function M.run(mission, bus)
   snap.halted = false
   save(snap, mission, nil, snap.tripActive and true or false)
 
-  local rok, rerr = recover(snap, mission, bus)
+  local rok, rerr = recover(snap, mission, bus, useGps)
   if not rok then return nil, rerr end
 
   if bus then
@@ -394,7 +412,10 @@ function M.run(mission, bus)
     local base, derr = dock.zero(hal, spec.base)
     if not base then return nil, "dock zero failed: " .. tostring(derr) end
 
-    local trip = nav.new(hal, tape.new(), spec.reserve, base)
+    -- Log position after dock zero (which uses GPS if available)
+    util.log(("miner: dock zero at x=%d y=%d z=%d f=%d"):format(base.x, base.y, base.z, base.f))
+
+    local trip = nav.new(hal, tape.new(), spec.reserve, base, useGps)
     snap.tripActive = true
     snap.pose = base
     snap.tape = trip.tape

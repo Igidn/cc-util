@@ -12,6 +12,30 @@ local FUEL_ITEMS = {
   ["minecraft:dried_kelp_block"] = true,
 }
 
+-- GPS functions (added to HAL for mockability in simulator)
+function M.locate(timeout)
+  if not backend or not gps then return nil, "gps not available" end
+  return gps.locate(timeout or 2)
+end
+
+function M.detectFacing()
+  if not backend or not gps then return nil, "gps not available" end
+  -- This is a simplified version; full implementation in lib/gps.lua
+  local x1, y1, z1 = gps.locate(2)
+  if not x1 then return nil, "initial locate failed" end
+  local ok, err = backend.forward()
+  if not ok then return nil, "forward failed: " .. tostring(err) end
+  local x2, y2, z2 = gps.locate(2)
+  backend.back()
+  if not x2 then return nil, "second locate failed" end
+  local dx, dz = x2 - x1, z2 - z1
+  if dx == 1 and dz == 0 then return 1 end
+  if dx == -1 and dz == 0 then return 3 end
+  if dx == 0 and dz == 1 then return 2 end
+  if dx == 0 and dz == -1 then return 0 end
+  return nil, "could not determine facing"
+end
+
 function M.setBackend(value) backend = value end
 function M.getBackend() return backend end
 
