@@ -61,7 +61,9 @@ local CHEST_LAYOUT = {
 }
 
 local CHEST_COUNT = #CHEST_LAYOUT
-local TARGET_Y = 10
+-- Depth below surface to dig the shaft (matches BASE_Y - TOP_WORLD_Y = 10).
+-- The room is built at surfaceY - SHAFT_DEPTH.
+local SHAFT_DEPTH = 10
 
 ----------------------------------------------------------------------
 -- GPS
@@ -128,24 +130,24 @@ end
 -- Shaft digging (surface to Y10)
 ----------------------------------------------------------------------
 
-local function digShaftToY10(navInstance, surfaceY)
+local function digShaftToY10(navInstance, surfaceY, targetY)
   local currentY = navInstance.pose.y
-  if currentY <= TARGET_Y then
-    util.log("station_builder: already at or below Y10")
+  if currentY <= targetY then
+    util.log(("station_builder: already at or below target Y%d"):format(targetY))
     return true
   end
 
-  local depth = currentY - TARGET_Y
-  util.log("station_builder: digging shaft down", depth, "blocks to Y", TARGET_Y)
+  local depth = currentY - targetY
+  util.log(("station_builder: digging shaft down %d blocks to Y%d"):format(depth, targetY))
   for i = 1, depth do
     local ok, err = nav.down(navInstance, 1)
     if not ok then
-      util.log("station_builder: shaft dig failed at depth", i, ":", err or "unknown")
+      util.log(("station_builder: shaft dig failed at depth %d: %s"):format(i, err or "unknown"))
       return false
     end
     -- Dispose debris every 10 blocks to prevent inventory fill
     if i % 10 == 0 then
-      util.log("station_builder: shaft progress Y", navInstance.pose.y)
+      util.log(("station_builder: shaft progress Y%d"):format(navInstance.pose.y))
       local ok, err = disposeDebris(navInstance, surfaceY)
       if not ok then
         util.log("station_builder: debris disposal failed:", err or "unknown")
@@ -153,7 +155,7 @@ local function digShaftToY10(navInstance, surfaceY)
       end
     end
   end
-  util.log("station_builder: shaft complete at Y", navInstance.pose.y)
+  util.log(("station_builder: shaft complete at Y%d"):format(navInstance.pose.y))
   return true
 end
 
@@ -497,13 +499,15 @@ function M.run(id, bus)
     util.log("station_builder: dock zero failed:", derr or "unknown")
   end
 
-  local surfaceY = (base and base.y) or (bus.pose and bus.pose.y) or 10
+  local surfaceY = (base and base.y) or (bus.pose and bus.pose.y) or 0
+  local targetY = surfaceY - SHAFT_DEPTH
+  util.log(("station_builder: surface at Y%d, digging shaft down %d blocks to room at Y%d"):format(surfaceY, SHAFT_DEPTH, targetY))
 
-  -- 4. Create nav instance
-  local navInstance = nav.new(hal, nil, 0, bus.pose or { x = 0, y = 0, z = 0, f = 0 }, true)
+  -- 4. Create nav instance from dock-zeroed base pose (real world coordinates)
+  local navInstance = nav.new(hal, nil, 0, base or { x = 0, y = surfaceY, z = 0, f = 0 }, true)
 
-  -- 5. Dig shaft down to Y10
-  if not digShaftToY10(navInstance, surfaceY) then
+  -- 5. Dig shaft down to targetY
+  if not digShaftToY10(navInstance, surfaceY, targetY) then
     return nil, "shaft dig failed"
   end
 
