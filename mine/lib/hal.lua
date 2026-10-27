@@ -163,6 +163,11 @@ function M.dropDown()
   return backend.dropDown()
 end
 
+function M.drop()
+  if not backend then return false end
+  return backend.drop()
+end
+
 function M.suckUp()
   if not backend then return false end
   return backend.suckUp()

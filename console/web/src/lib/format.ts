@@ -121,6 +121,7 @@ export function roleLabel(role: TurtleRole): string {
     miner: "miner",
     lumberjack: "lumberjack",
     hauler: "hauler",
+    station_builder: "station builder",
     unassigned: "unassigned",
   };
   return labels[role] ?? role;
@@ -131,6 +132,7 @@ export function roleTone(role: TurtleRole): Tone {
     miner: "signal",
     lumberjack: "live",
     hauler: "info",
+    station_builder: "signal",
     unassigned: "muted",
   };
   return tones[role] ?? "muted";

@@ -13,6 +13,8 @@ import { ForestryTab } from "@/tabs/forestry";
 import { FleetTab } from "@/tabs/fleet";
 import { EventsTab } from "@/tabs/events";
 import { SettingsTab } from "@/tabs/settings";
+import { DeploymentTab } from "@/tabs/deployment";
+import { StationDetailTab } from "@/tabs/station-detail";
 
 function readTab(): TabId {
   const value = window.location.hash.replace(/^#\/?/, "").split("?")[0];
@@ -57,6 +59,8 @@ function ConsoleApp() {
       {tab === "fleet" ? <FleetTab /> : null}
       {tab === "events" ? <EventsTab /> : null}
       {tab === "settings" ? <SettingsTab /> : null}
+      {tab === "deployment" ? <DeploymentTab /> : null}
+      {tab === "station-detail" ? <StationDetailTab /> : null}
     </AppShell>
   );
 }

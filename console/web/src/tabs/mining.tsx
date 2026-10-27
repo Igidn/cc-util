@@ -335,7 +335,7 @@ export function MiningTab() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {snapshot.missions.slice(0, 16).map((mission) => {
+                {(snapshot.missions ?? []).slice(0, 16).map((mission) => {
                   const turtle = snapshot.turtles.find((entry) => entry.id === mission.turtleId);
                   const meta = missionMeta(mission.state);
                   return (

@@ -1,4 +1,4 @@
-import { HelpCircle, Package, Pickaxe, Trees } from "lucide-react";
+import { HelpCircle, Package, Pickaxe, Shapes, Trees } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { initials, roleLabel, turtleName } from "@/lib/format";
 import type { PublicTurtle, TurtleRole } from "@/lib/types";
@@ -7,6 +7,7 @@ const roleStyle: Record<TurtleRole, string> = {
   miner: "border-signal/30 bg-signal/12 text-signal",
   lumberjack: "border-live/30 bg-live/12 text-live",
   hauler: "border-info/30 bg-info/12 text-info",
+  station_builder: "border-signal/30 bg-signal/12 text-signal",
   unassigned: "border-border bg-muted/50 text-muted-foreground",
 };
 
@@ -14,6 +15,7 @@ const roleIcon = {
   miner: Pickaxe,
   lumberjack: Trees,
   hauler: Package,
+  station_builder: Shapes,
   unassigned: HelpCircle,
 } satisfies Record<TurtleRole, typeof Pickaxe>;
 

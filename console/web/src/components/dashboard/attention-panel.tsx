@@ -172,14 +172,14 @@ export function FleetReadiness({ issues }: { issues: Issue[] }) {
   if (!snapshot) return null;
 
   const issueIds = new Set(issues.filter((issue) => issue.severity !== "info").map((issue) => issue.turtle.id));
-  const operational = snapshot.turtles.filter(
+  const operational = (snapshot.turtles ?? []).filter(
     (turtle) => snapshot.online.includes(turtle.id) && !issueIds.has(turtle.id),
   ).length;
-  const total = snapshot.turtles.length;
+  const total = (snapshot.turtles ?? []).length;
   const segments = 18;
   const filled = total === 0 ? 0 : Math.round((operational / total) * segments);
 
-  const rows = [...snapshot.turtles]
+  const rows = [...(snapshot.turtles ?? [])]
     .sort((a, b) => {
       const aAlert = issueIds.has(a.id) ? 0 : 1;
       const bAlert = issueIds.has(b.id) ? 0 : 1;

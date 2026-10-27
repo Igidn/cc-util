@@ -95,7 +95,7 @@ export function TurtleSheet({
     snapshot.missions.find((mission) => mission.turtleId === turtle.id);
   const meta = stateMeta(turtle.state, online);
   const hold = inventoryStats(turtle.inventory);
-  const events = snapshot.events.filter((event) => event.turtleId === turtle.id).slice(0, 7);
+  const events = (snapshot.events ?? []).filter((event) => event.turtleId === turtle.id).slice(0, 7);
   const pingPending = isPending(turtle.id, "ping");
 
   const saveLabel = async (event: FormEvent) => {

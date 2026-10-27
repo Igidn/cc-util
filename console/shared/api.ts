@@ -63,9 +63,17 @@ export type Station = {
   index: number;
   anchor: Vec3;
   createdAt: number;
+  name: string;
+  shaftPose: Pose | null;
+  roomPose: Pose | null;
+  built: boolean;
+  storageChestCount: number;
+  storageChestsFilled: number;
+  depotNotifiedAt: number | null;
+  haulerEvacuatingAt: number | null;
 };
 
-export type TurtleRole = "miner" | "lumberjack" | "hauler" | "unassigned";
+export type TurtleRole = "miner" | "lumberjack" | "hauler" | "unassigned" | "station_builder";
 
 export type Turtle = {
   id: string;
@@ -106,6 +114,37 @@ export type EventRecord = {
 
 export type OreCell = { x: number; y: number; z: number; name: string };
 
+export type Chest = {
+  id: string;
+  stationId: string;
+  kind: "storage" | "refuel" | "depot" | "fuel";
+  pose: Pose;
+  label?: string;
+  filledAt?: number;
+  requestedBy?: string;
+  fillPercent?: number;
+};
+
+export type ItemRequest = {
+  id: string;
+  stationId: string;
+  requestedBy: string;
+  itemName: string;
+  count: number;
+  status: "pending" | "assigned" | "delivered" | "cancelled";
+  haulerId?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ShaftLock = {
+  stationId: string;
+  holderTurtleId: string | null;
+  queue: string[];
+  acquiredAt: number | null;
+  expiresAt: number | null;
+};
+
 /** Sparse per-station ore map. Tunnels are derived from the deterministic plan. */
 export type StationMap = { ores: Record<string, OreCell> };
 
@@ -116,6 +155,9 @@ export type StoreData = {
   missions: Record<string, Mission>;
   events: EventRecord[];
   maps: Record<string, StationMap>;
+  chests: Record<string, Chest>;
+  requests: Record<string, ItemRequest>;
+  shaftLocks: Record<string, ShaftLock>;
 };
 
 export type PublicTurtle = Omit<Turtle, "secretHash">;
@@ -199,4 +241,7 @@ export type Snapshot = {
   ores: OreTally[];
   oreRecent: (OreCell & { stationId: string })[];
   oreCounts: Record<string, number>;
+  chests: Chest[];
+  requests: ItemRequest[];
+  shaftLocks: ShaftLock[];
 };

@@ -37,8 +37,10 @@ export function MissionControls({
         {turtle.role === "lumberjack"
           ? "forestry runtime not built"
           : turtle.role === "hauler"
-            ? "hauler dispatch not wired"
-            : "assign a role first"}
+            ? "hauler runs from deployment tab"
+            : turtle.role === "station_builder"
+              ? "station builder runs from deployment tab"
+              : "assign a role first"}
       </span>
     );
   }

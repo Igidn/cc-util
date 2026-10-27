@@ -18,6 +18,7 @@ local hal = require("lib.hal")
 local nav = require("lib.nav")
 local dock = require("lib.dock")
 local gps = require("lib.gps")
+local shaft = require("lib.shaft")
 
 local M = {}
 
@@ -26,6 +27,114 @@ local SAVE_EVERY = 8
 
 local function send(bus, msg)
   if bus and bus.send then bus.send(msg) end
+end
+
+-- Fetch chest positions for a station from the console.
+-- Returns array of chest tables, or nil on failure.
+local function getStationChests(tunnel, stationId)
+  local response, err = http.get(tunnel .. "/api/chests?stationId=" .. stationId, {
+    ["User-Agent"] = "cc-util/0.1.0",
+  })
+  if not response then return nil end
+  local code = response.getResponseCode()
+  local text = response.readAll()
+  response.close()
+  if code ~= 200 then return nil end
+  local data = util.jsonDecode(text)
+  if not data or type(data.chests) ~= "table" then return nil end
+  return data.chests
+end
+
+-- Find the nearest storage chest to the current pose.
+local function findNearestStorageChest(navInstance, chests)
+  local best, bestDist = nil, math.huge
+  for _, chest in ipairs(chests) do
+    if chest.kind == "storage" and chest.pose then
+      local dx = chest.pose.x - navInstance.pose.x
+      local dy = chest.pose.y - navInstance.pose.y
+      local dz = chest.pose.z - navInstance.pose.z
+      local dist = dx * dx + dy * dy + dz * dz
+      if dist < bestDist then
+        bestDist = dist
+        best = chest
+      end
+    end
+  end
+  return best
+end
+
+-- Find the refueling chest.
+local function findRefuelChest(chests)
+  for _, chest in ipairs(chests) do
+    if chest.kind == "refuel" and chest.pose then return chest end
+  end
+  return nil
+end
+
+-- Navigate to a target position using Manhattan moves. Updates the tape.
+local function navigateTo(navInstance, targetX, targetY, targetZ)
+  local dy = targetY - navInstance.pose.y
+  if dy > 0 then
+    for _ = 1, dy do
+      local ok, err = nav.up(navInstance, 1)
+      if not ok then return nil, "up failed: " .. tostring(err) end
+    end
+  elseif dy < 0 then
+    for _ = 1, -dy do
+      local ok, err = nav.down(navInstance, 1)
+      if not ok then return nil, "down failed: " .. tostring(err) end
+    end
+  end
+  local dx = targetX - navInstance.pose.x
+  if dx > 0 then
+    nav.face(navInstance, 1)
+    for _ = 1, dx do
+      local ok, err = nav.step(navInstance, "forward")
+      if not ok then return nil, "east failed: " .. tostring(err) end
+    end
+  elseif dx < 0 then
+    nav.face(navInstance, 3)
+    for _ = 1, -dx do
+      local ok, err = nav.step(navInstance, "forward")
+      if not ok then return nil, "west failed: " .. tostring(err) end
+    end
+  end
+  local dz = targetZ - navInstance.pose.z
+  if dz > 0 then
+    nav.face(navInstance, 2)
+    for _ = 1, dz do
+      local ok, err = nav.step(navInstance, "forward")
+      if not ok then return nil, "south failed: " .. tostring(err) end
+    end
+  elseif dz < 0 then
+    nav.face(navInstance, 0)
+    for _ = 1, -dz do
+      local ok, err = nav.step(navInstance, "forward")
+      if not ok then return nil, "north failed: " .. tostring(err) end
+    end
+  end
+  return true
+end
+
+-- Drop every inventory slot into the chest directly below the turtle.
+local function depositItemsDown()
+  local dropped = 0
+  for slot = 1, 16 do
+    local item = hal.itemDetail(slot)
+    if item then
+      hal.select(slot)
+      if hal.dropDown() then dropped = dropped + 1 end
+    end
+  end
+  return dropped
+end
+
+-- Suck lava buckets from the chest directly above the turtle, then refuel.
+local function refuelFromAbove()
+  for _ = 1, 16 do
+    if not hal.suckUp() then break end
+  end
+  return hal.refuelFromInventory()
 end
 
 local function progressMsg(bus, mission, snap, trip, stateName)
@@ -268,30 +377,6 @@ local function mine(trip, legs, progress, snap, mission, budget, bus)
   return mined
 end
 
-local function returnHome(trip, snap, mission, bus)
-  local ok, err = nav.retraceAll(trip)
-  if not ok then return nil, err end
-
-  local base, derr = dock.zero(hal, mission.spec.base)
-  if not base then return nil, "dock zero failed: " .. tostring(derr) end
-
-  trip.pose = base
-  snap.tripActive = false
-  snap.pose = base
-  snap.tape = tape.new()
-  save(snap, mission, trip, false)
-  if bus then bus.pose = base; bus.stats = snap.stats end
-
-  local keep = hal.findFuelSlot() or 16
-  hal.unload(keep)
-  -- Pull a stack of fuel from the chest above the dock, then refuel.
-  for _ = 1, 16 do
-    if not hal.suckUp() then break end
-  end
-  hal.refuelFromInventory()
-  return true
-end
-
 local function recover(snap, mission, bus, useGps)
   if not snap.tripActive then return true end
 
@@ -332,11 +417,26 @@ function M.run(mission, bus)
   spec.maxVeinBlocks = math.min(spec.maxVeinBlocks, 64)
   spec.reserve = math.max(spec.reserve, 16)
 
+  -- Station context from the console welcome message.
+  local stationId = bus.station and bus.station.id or "s0"
+  local tunnel = bus.serverUrl
+  local id = bus.turtleId or ""
+
+  -- Fetch chest positions for this station.
+  local chests = {}
+  if tunnel then
+    local fetched = getStationChests(tunnel, stationId)
+    if fetched then chests = fetched end
+    util.log("miner: loaded", #chests, "chests for station", stationId)
+  end
+
+  -- Shaft descent moves: staging (north) + down leg to room level.
+  local shaftMoves = spec.staging + (-spec.startY)
+
   -- Check GPS availability at startup
   local useGps = gps.available(1)
   if useGps then
     util.log("miner: GPS available, using absolute positioning")
-    -- Try to sync initial pose from GPS
     local initPose = pose.copy(spec.base)
     local ok, err = gps.syncPose(initPose, hal, true)
     if ok then
@@ -409,11 +509,21 @@ function M.run(mission, bus)
       return "paused"
     end
 
+    -- Dock zero at the surface dock.
     local base, derr = dock.zero(hal, spec.base)
     if not base then return nil, "dock zero failed: " .. tostring(derr) end
-
-    -- Log position after dock zero (which uses GPS if available)
     util.log(("miner: dock zero at x=%d y=%d z=%d f=%d"):format(base.x, base.y, base.z, base.f))
+
+    -- Acquire the shaft lock before descending. Blocks until granted.
+    -- Skipped when there is no tunnel (single-turtle / test mode).
+    local acquired = true
+    if tunnel then
+      acquired = shaft.acquire(tunnel, stationId, id, "mining")
+    end
+    if not acquired then
+      util.log("miner: could not acquire shaft lock, aborting trip")
+      return nil, "shaft lock unavailable"
+    end
 
     local trip = nav.new(hal, tape.new(), spec.reserve, base, useGps)
     snap.tripActive = true
@@ -421,11 +531,17 @@ function M.run(mission, bus)
     snap.tape = trip.tape
     save(snap, mission, trip, true)
 
+    -- Travel to the frontier (replays plan including shaft descent).
     local tok, terr = travelTo(trip, legs, snap.progress, bus)
     if not tok then
-      local home, herr = returnHome(trip, snap, mission, bus)
-      if not home then
-        return nil, "travel failed: " .. tostring(terr) .. "; return failed: " .. tostring(herr)
+      -- Failed underground: return to surface and release lock.
+      local homeOK, homeErr = nav.retraceAll(trip)
+      if homeOK then
+        dock.zero(hal, spec.base)
+      end
+      if tunnel then shaft.release(tunnel, stationId, id) end
+      if not homeOK then
+        return nil, "travel failed: " .. tostring(terr) .. "; return failed: " .. tostring(homeErr)
       end
       if bus.abort then
         snap.halted = true
@@ -440,12 +556,29 @@ function M.run(mission, bus)
       return nil, "travel failed: " .. tostring(terr)
     end
 
+    -- Release the shaft lock now that we are at the room level (not in the shaft column).
+    if tunnel then shaft.release(tunnel, stationId, id) end
+
+    -- Mine blocks at the frontier.
     local mined, merr = mine(trip, legs, snap.progress, snap, mission, spec.maxTripBlocks, bus)
     if not mined then
-      local home, herr = returnHome(trip, snap, mission, bus)
-      if not home then
-        return nil, "mine failed: " .. tostring(merr) .. "; return failed: " .. tostring(herr)
+      -- Return to shaft bottom, deposit/refuel, then ascend and release lock.
+      local retOK, retErr = nav.retraceTo(trip, shaftMoves)
+      if retOK then
+        depositItemsDown()
+        refuelFromAbove()
+        -- Ascend to surface.
+        local upBlocks = -spec.startY
+        for _ = 1, upBlocks do nav.up(trip, 1) end
+        nav.face(trip, 2)
+        nav.step(trip, "forward")
+        dock.zero(hal, spec.base)
       end
+      if tunnel then shaft.release(tunnel, stationId, id) end
+      tape.clear(trip.tape)
+      snap.tape = tape.new()
+      snap.tripActive = false
+      save(snap, mission, nil, false)
       if bus.abort then
         snap.halted = true
         save(snap, mission, nil, false)
@@ -459,9 +592,57 @@ function M.run(mission, bus)
       return nil, "mine failed: " .. tostring(merr)
     end
 
-    local home, herr = returnHome(trip, snap, mission, bus)
-    if not home then return nil, "return failed: " .. tostring(herr) end
+    -- Return to shaft bottom (retrace all mining moves, keep shaft descent on tape).
+    local retOK, retErr = nav.retraceTo(trip, shaftMoves)
+    if retOK then
+      -- Deposit all carried items into the storage chest below.
+      local dropped = depositItemsDown()
+      if dropped > 0 then
+        util.log("miner: deposited", dropped, "item stacks into storage chest at shaft bottom")
+      end
+      -- Refuel from the refueling chest above.
+      local fuelOK, fuelErr = refuelFromAbove()
+      if fuelOK then
+        util.log("miner: refueled from refuel chest at shaft bottom")
+      else
+        util.log("miner: refuel from chest failed:", fuelErr or "unknown")
+      end
+    else
+      util.log("miner: retrace to shaft bottom failed:", retErr or "unknown")
+    end
 
+    -- Acquire the shaft lock for the ascent.
+    local acqOK = true
+    if tunnel then
+      acqOK = shaft.acquire(tunnel, stationId, id, "ascent")
+    end
+    if not acqOK then
+      util.log("miner: could not re-acquire shaft lock for ascent")
+      -- Still try to ascend without lock (best effort).
+    end
+
+    -- Ascend to surface: go up from room level, then south back to dock.
+    local upBlocks = -spec.startY
+    for _ = 1, upBlocks do
+      local ok, err = nav.up(trip, 1)
+      if not ok then
+        util.log("miner: ascent failed at block", _, ":", err or "unknown")
+        break
+      end
+    end
+    nav.face(trip, 2)
+    nav.step(trip, "forward")
+    -- Face north so dock.zero's physical fixture ends with correct facing.
+    nav.face(trip, 0)
+
+    -- Release the shaft lock.
+    if tunnel then shaft.release(tunnel, stationId, id) end
+
+    -- Re-zero at the surface dock and clear the trip tape.
+    dock.zero(hal, spec.base)
+    tape.clear(trip.tape)
+    snap.tape = tape.new()
+    snap.tripActive = false
     snap.stats.trips = snap.stats.trips + 1
     save(snap, mission, trip, false)
     progressMsg(bus, mission, snap, trip, "idle")

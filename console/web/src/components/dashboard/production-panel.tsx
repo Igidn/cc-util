@@ -230,8 +230,10 @@ export function ActivityFeed() {
   const now = useNow(10_000);
   if (!snapshot) return null;
 
-  const events = snapshot.events.slice(0, 8);
-  const turtles = new Map(snapshot.turtles.map((turtle) => [turtle.id, turtle.label || turtle.id.slice(0, 6)]));
+  const events = (snapshot.events ?? []).slice(0, 8);
+  const turtles = new Map(
+    (snapshot.turtles ?? []).map((turtle) => [turtle.id, turtle.label || turtle.id.slice(0, 6)]),
+  );
 
   return (
     <section className="flex h-full flex-col rounded-xl border border-border/80 bg-card/30 p-4 sm:p-5">
@@ -284,8 +286,8 @@ export function ActivityFeed() {
                     <span className="mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
                       {formatClock(event.at)}
                     </span>
-                    <span className="mono text-[9px] text-muted-foreground/70" title={turtles.get(event.turtleId)}>
-                      {turtles.get(event.turtleId) ?? event.turtleId.slice(0, 6)}
+                    <span className="mono text-[9px] text-muted-foreground/70" title={turtles.get(event.turtleId ?? "")}>
+                      {turtles.get(event.turtleId ?? "") ?? (event.turtleId ? event.turtleId.slice(0, 6) : "unknown")}
                     </span>
                   </div>
                   <div className="mt-0.5 text-[11px] leading-snug text-foreground/85">

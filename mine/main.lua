@@ -11,10 +11,10 @@ if not id then
   return
 end
 
-util.log("cc-util", util.VERSION, "turtle", id.id)
+util.log("cc-util", util.VERSION, "turtle", id.id, "role", id.role or "unassigned")
 
 while true do
-  local bus = { connected = false, outbox = {} }
+  local bus = { connected = false, outbox = {}, role = id.role or "unassigned" }
   local ok, err = pcall(function()
     parallel.waitForAll(
       function() require("lib.link").run(id, bus) end,

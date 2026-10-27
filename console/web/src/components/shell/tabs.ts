@@ -1,5 +1,7 @@
 import {
   Bot,
+  Building2,
+  Database,
   LayoutDashboard,
   Pickaxe,
   ScrollText,
@@ -8,7 +10,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-export type TabId = "overview" | "mining" | "forestry" | "fleet" | "events" | "settings";
+export type TabId = "overview" | "mining" | "forestry" | "fleet" | "events" | "settings" | "deployment" | "station-detail";
 
 export type TabDef = {
   id: TabId;
@@ -69,6 +71,22 @@ export const TABS: TabDef[] = [
     icon: SlidersHorizontal,
     group: "record",
     description: "Runtime geometry and access.",
+  },
+  {
+    id: "deployment",
+    label: "Station Deployment",
+    short: "Deploy",
+    icon: Building2,
+    group: "fleet",
+    description: "Role assignment, station chests, item requests, and shaft queue.",
+  },
+  {
+    id: "station-detail",
+    label: "Station Detail",
+    short: "Stations",
+    icon: Database,
+    group: "fleet",
+    description: "Per-station chest map, fill levels, and shaft queue status.",
   },
 ];
 

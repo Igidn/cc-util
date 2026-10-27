@@ -51,8 +51,9 @@ function M.run(identity, bus)
       bus.config = msg.config or bus.config
       bus.serverTime = msg.serverTime
       bus.turtleId = msg.turtleId
+      if msg.role then bus.role = msg.role end
       if msg.mission and not bus.mission and not bus.blocked then bus.mission = msg.mission end
-      util.log("link: connected as", bus.turtleId or identity.id)
+      util.log("link: connected as", bus.turtleId or identity.id, "role", bus.role)
     elseif msg.type == "command" then
       local op = msg.op
       if op == "startMission" then
@@ -74,6 +75,12 @@ function M.run(identity, bus)
         send({ type = "ack", id = msg.id, status = "returning" })
       elseif op == "ping" then
         send({ type = "pong", id = msg.id, seq = msg.seq })
+      elseif op == "assignRole" then
+        if msg.role then
+          bus.role = msg.role
+          util.log("link: role assigned", msg.role)
+        end
+        send({ type = "ack", id = msg.id, status = "role-assigned" })
       else
         send({ type = "ack", id = msg.id, status = "unknown-op" })
       end

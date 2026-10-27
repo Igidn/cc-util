@@ -9,6 +9,7 @@ const roleColor: Record<TurtleRole, string> = {
   miner: "var(--signal)",
   lumberjack: "var(--live)",
   hauler: "var(--info)",
+  station_builder: "var(--signal)",
   unassigned: "var(--muted-foreground)",
 };
 

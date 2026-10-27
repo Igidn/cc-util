@@ -4,10 +4,10 @@ import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import type { EventRecord, OreCell, StoreData, TurtleRole } from "./types.js";
 
-const ROLES: TurtleRole[] = ["miner", "lumberjack", "hauler", "unassigned"];
+const ROLES: TurtleRole[] = ["miner", "lumberjack", "hauler", "unassigned", "station_builder"];
 
 function empty(): StoreData {
-  return { version: 1, turtles: {}, stations: {}, missions: {}, events: [], maps: {} };
+  return { version: 1, turtles: {}, stations: {}, missions: {}, events: [], maps: {}, chests: {}, requests: {}, shaftLocks: {} };
 }
 
 class Store {
@@ -26,9 +26,26 @@ class Store {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, "utf8")) as StoreData;
       if (raw.version !== 1) return empty();
+      if (!raw.turtles) raw.turtles = {};
+      if (!raw.stations) raw.stations = {};
+      if (!raw.missions) raw.missions = {};
+      if (!raw.events) raw.events = [];
       if (!raw.maps) raw.maps = {};
+      if (!raw.chests) raw.chests = {};
+      if (!raw.requests) raw.requests = {};
+      if (!raw.shaftLocks) raw.shaftLocks = {};
       for (const turtle of Object.values(raw.turtles ?? {})) {
         if (!ROLES.includes(turtle.role)) turtle.role = "miner";
+      }
+      for (const station of Object.values(raw.stations ?? {})) {
+        if (typeof station.name !== "string") station.name = `Station ${station.index}`;
+        if (station.shaftPose === undefined) station.shaftPose = null;
+        if (station.roomPose === undefined) station.roomPose = null;
+        if (station.built === undefined) station.built = false;
+        if (typeof station.storageChestCount !== "number") station.storageChestCount = 32;
+        if (typeof station.storageChestsFilled !== "number") station.storageChestsFilled = 0;
+        if (station.depotNotifiedAt === undefined) station.depotNotifiedAt = null;
+        if (station.haulerEvacuatingAt === undefined) station.haulerEvacuatingAt = null;
       }
       return raw;
     } catch {

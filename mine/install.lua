@@ -157,6 +157,46 @@ end
 writeFile(DEST .. "/id", id .. "\n")
 print("station " .. tostring(registered.station and registered.station.id or "?"))
 
+-- Signal the console that this turtle needs a role. The console will show a
+-- pending-role prompt; the operator selects station_builder / miner / hauler.
+print("requesting role assignment from console...")
+local rbody, rerr = httpPost(tunnel .. "/api/turtles/" .. id .. "/role-request", textutils.serializeJSON({
+  computerId = os.getComputerID(),
+  label = os.getComputerLabel(),
+}))
+if not rbody then
+  print("could not request role: " .. tostring(rerr))
+  return
+end
+
+-- Block until the console assigns a role (station_builder / miner / hauler).
+-- The installer does not proceed to download/reboot until the operator selects
+-- a role from the console. Polls every 2 seconds.
+print("waiting for console to assign a role...")
+local role = nil
+local roleDeadline = (os.epoch and os.epoch("utc") or os.time() * 1000) + 300 * 1000 -- 5 min max
+while true do
+  local now = os.epoch and os.epoch("utc") or os.time() * 1000
+  if now > roleDeadline then
+    print("timeout waiting for role assignment; aborting install")
+    return
+  end
+
+  local body, err = httpGet(tunnel .. "/api/turtles/" .. id .. "/role-status")
+  if body then
+    local data = jsonDecode(body)
+    if type(data) == "table" and type(data.role) == "string" and data.role ~= "unassigned" then
+      role = data.role
+      break
+    end
+  end
+  os.sleep(2)
+end
+
+print("role assigned: " .. role)
+saved.role = role
+writeFile(DEST .. "/identity.json", textutils.serializeJSON(saved))
+
 -- Download the runtime manifest and every listed asset.
 local manifestBody, merr = httpGet(BASE .. "/manifest.json")
 if not manifestBody then

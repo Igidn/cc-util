@@ -244,6 +244,7 @@ export function FleetTab() {
                   <SelectItem value="miner">miner</SelectItem>
                   <SelectItem value="lumberjack">lumberjack</SelectItem>
                   <SelectItem value="hauler">hauler</SelectItem>
+                  <SelectItem value="station_builder">station builder</SelectItem>
                   <SelectItem value="unassigned">unassigned</SelectItem>
                 </SelectContent>
               </Select>

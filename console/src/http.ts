@@ -6,6 +6,10 @@ import { hub } from "./hub.js";
 import { mapForMission } from "./map.js";
 import { register } from "./registry.js";
 import { store } from "./store.js";
+import { Chest } from "./types.js";
+import { acquireShaft, releaseShaft, getShaftStatus, expireStaleLocks } from "./shaft.js";
+import { placeChest, listChests, updateChestFill, getStorageChests, getRefuelChest } from "./chests.js";
+import { createRequest, listRequests, cancelRequest, assignRequest, deliverRequest } from "./requests.js";
 
 const webDist = path.resolve(config.root, "web", "dist");
 
@@ -273,6 +277,271 @@ export function createServer(): Server {
         return;
       }
 
+      // ---- Role assignment (turtle blocks on this during install) ----
+      const roleReq = url.pathname.match(/^\/api\/turtles\/([^/]+)\/role-request$/);
+      if (req.method === "POST" && roleReq) {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const turtleId = decodeURIComponent(roleReq[1]);
+        const turtle = store.data.turtles[turtleId];
+        if (!turtle) {
+          json(res, 404, { ok: false, error: "unknown turtle" });
+          return;
+        }
+        // Mark as pending role assignment; installer polls until role is set.
+        store.event(turtleId, "role_requested", { computerId: body.computerId, label: body.label });
+        store.save();
+        json(res, 200, { ok: true, pending: true });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/turtles/pending") {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const pending = Object.values(store.data.turtles).filter(
+          (t) => t.role === "unassigned",
+        );
+        json(res, 200, { ok: true, turtles: pending });
+        return;
+      }
+
+      const assignRole = url.pathname.match(/^\/api\/turtles\/([^/]+)\/assign-role$/);
+      if (req.method === "POST" && assignRole) {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const id = decodeURIComponent(assignRole[1]);
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const ok = hub.assignRole(id, String(body.role ?? ""));
+        json(res, ok ? 200 : 400, { ok });
+        return;
+      }
+
+      const roleStatus = url.pathname.match(/^\/api\/turtles\/([^/]+)\/role-status$/);
+      if (req.method === "GET" && roleStatus) {
+        const id = decodeURIComponent(roleStatus[1]);
+        const turtle = store.data.turtles[id];
+        if (!turtle) {
+          json(res, 404, { ok: false, error: "unknown turtle" });
+          return;
+        }
+        json(res, 200, { ok: true, role: turtle.role });
+        return;
+      }
+
+      // ---- Chests ----
+      if (req.method === "GET" && url.pathname === "/api/chests") {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const stationId = url.searchParams.get("stationId") ?? undefined;
+        json(res, 200, { ok: true, chests: listChests(stationId) });
+        return;
+      }
+
+      const chestStation = url.pathname.match(/^\/api\/chests\/([^/]+)$/);
+      if (req.method === "GET" && chestStation) {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const stationId = decodeURIComponent(chestStation[1]);
+        json(res, 200, { ok: true, chests: listChests(stationId) });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/chests") {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const chest = body as Chest;
+        if (!chest || typeof chest.id !== "string" || !chest.stationId || !chest.kind || !chest.pose) {
+          json(res, 400, { ok: false, error: "invalid chest" });
+          return;
+        }
+        placeChest(chest);
+        json(res, 200, { ok: true, chestId: chest.id });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/chests/fill") {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const chestId = String(body.chestId ?? "");
+        const fillPercent = Number(body.fillPercent);
+        if (!chestId || !Number.isFinite(fillPercent)) {
+          json(res, 400, { ok: false, error: "invalid fill update" });
+          return;
+        }
+        const updated = updateChestFill(chestId, fillPercent);
+        if (!updated) {
+          json(res, 404, { ok: false, error: "chest not found" });
+          return;
+        }
+        json(res, 200, { ok: true, chest: updated });
+        return;
+      }
+
+      // ---- Item requests ----
+      if (req.method === "POST" && url.pathname === "/api/requests") {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const stationId = String(body.stationId ?? "");
+        const requestedBy = String(body.requestedBy ?? "");
+        const itemName = String(body.itemName ?? "");
+        const count = Number(body.count);
+        if (!stationId || !requestedBy || !itemName || !Number.isFinite(count) || count <= 0) {
+          json(res, 400, { ok: false, error: "invalid request" });
+          return;
+        }
+        const request = createRequest(stationId, requestedBy, itemName, count);
+        json(res, 200, { ok: true, request });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/requests") {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const stationId = url.searchParams.get("stationId") ?? undefined;
+        const status = url.searchParams.get("status") as ("pending" | "assigned" | "delivered" | "cancelled") | undefined;
+        json(res, 200, { ok: true, requests: listRequests(stationId, status) });
+        return;
+      }
+
+      const cancelReq = url.pathname.match(/^\/api\/requests\/([^/]+)\/cancel$/);
+      if (req.method === "POST" && cancelReq) {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const id = decodeURIComponent(cancelReq[1]);
+        const request = cancelRequest(id);
+        if (!request) {
+          json(res, 404, { ok: false, error: "request not found or not cancellable" });
+          return;
+        }
+        json(res, 200, { ok: true, request });
+        return;
+      }
+
+      const assignReq = url.pathname.match(/^\/api\/requests\/([^/]+)\/assign$/);
+      if (req.method === "POST" && assignReq) {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const id = decodeURIComponent(assignReq[1]);
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const haulerId = String(body.haulerId ?? "");
+        if (!haulerId) {
+          json(res, 400, { ok: false, error: "haulerId required" });
+          return;
+        }
+        const request = assignRequest(id, haulerId);
+        if (!request) {
+          json(res, 409, { ok: false, error: "request not found or not pending" });
+          return;
+        }
+        json(res, 200, { ok: true, request });
+        return;
+      }
+
+      const deliverReq = url.pathname.match(/^\/api\/requests\/([^/]+)\/deliver$/);
+      if (req.method === "POST" && deliverReq) {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const id = decodeURIComponent(deliverReq[1]);
+        const request = deliverRequest(id);
+        if (!request) {
+          json(res, 404, { ok: false, error: "request not found" });
+          return;
+        }
+        json(res, 200, { ok: true, request });
+        return;
+      }
+
+      // ---- Shaft queuing ----
+      const shaftAcquire = url.pathname.match(/^\/api\/shaft\/([^/]+)\/acquire$/);
+      if (req.method === "POST" && shaftAcquire) {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const stationId = decodeURIComponent(shaftAcquire[1]);
+        const turtleId = String(body.turtleId ?? "");
+        if (!turtleId) {
+          json(res, 400, { ok: false, error: "turtleId required" });
+          return;
+        }
+        const result = acquireShaft(stationId, turtleId);
+        if ("rejected" in result) {
+          json(res, 429, { ok: false, reason: result.reason });
+          return;
+        }
+        json(res, 200, { ok: true, ...result });
+        return;
+      }
+
+      const shaftRelease = url.pathname.match(/^\/api\/shaft\/([^/]+)\/release$/);
+      if (req.method === "POST" && shaftRelease) {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const stationId = decodeURIComponent(shaftRelease[1]);
+        const turtleId = String(body.turtleId ?? "");
+        if (!turtleId) {
+          json(res, 400, { ok: false, error: "turtleId required" });
+          return;
+        }
+        const result = releaseShaft(stationId, turtleId);
+        if (!("ok" in result) || !result.ok) {
+          json(res, 409, { ok: false, reason: (result as { reason?: string }).reason });
+          return;
+        }
+        json(res, 200, { ok: true, next: result.next });
+        return;
+      }
+
+      const shaftStatus = url.pathname.match(/^\/api\/shaft\/([^/]+)\/status$/);
+      if (req.method === "GET" && shaftStatus) {
+        const stationId = decodeURIComponent(shaftStatus[1]);
+        const lock = getShaftStatus(stationId);
+        json(res, 200, { ok: true, lock: lock ?? { stationId, holderTurtleId: null, queue: [], acquiredAt: null, expiresAt: null } });
+        return;
+      }
+
+      // ---- GPS alert / reload ----
+      const gpsAlert = url.pathname.match(/^\/api\/stations\/([^/]+)\/gps-alert$/);
+      if (req.method === "POST" && gpsAlert) {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const stationId = decodeURIComponent(gpsAlert[1]);
+        const turtleId = String(body.turtleId ?? "");
+        store.event(turtleId || "system", "gps_alert", { stationId });
+        store.save();
+        json(res, 200, { ok: true, alerted: true });
+        return;
+      }
+
+      const stationReload = url.pathname.match(/^\/api\/stations\/([^/]+)\/reload$/);
+      if (req.method === "POST" && stationReload) {
+        if (!authorized(req, url)) {
+          json(res, 401, { ok: false, error: "unauthorized" });
+          return;
+        }
+        const stationId = decodeURIComponent(stationReload[1]);
+        const station = store.data.stations[stationId];
+        if (!station) {
+          json(res, 404, { ok: false, error: "unknown station" });
+          return;
+        }
+        store.event("system", "station_reload", { stationId });
+        store.save();
+        json(res, 200, { ok: true, stationId });
+        return;
+      }
+
       if (url.pathname.startsWith("/api/")) {
         json(res, 404, { ok: false, error: "not found" });
         return;
@@ -286,6 +555,11 @@ export function createServer(): Server {
       json(res, 500, { ok: false, error: (error as Error).message });
     }
   });
+
+  // Periodically expire shaft locks whose TTL has passed.
+  setInterval(() => {
+    expireStaleLocks();
+  }, 30_000).unref();
 
   return server;
 }

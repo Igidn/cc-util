@@ -41,10 +41,15 @@ console/                 Node 20+ / TypeScript console
   src/map.ts             derived tunnel cells plus saved ore cells
   src/registry.ts        registration, secret hashing, station assignment
   src/hub.ts             WebSocket auth, missions, telemetry, control
-  src/http.ts            dashboard, registration, state, map, control
+  src/http.ts            console serving, registration, state, map, control
+  src/realtime.ts        Socket.IO snapshot broadcast
   src/tunnel.ts          OpenTunnel route add / status
   src/publish.ts         runtime manifest and fixed-tag GitHub release
   src/index.ts           startup and shutdown
+  shared/api.ts          REST and realtime payload types
+  web/                   React/Vite operator console
+  scripts/seed-demo.ts   demo state generator
+  scripts/demo-turtles.ts simulated live turtles
 
 mine/                    CC: Tweaked Lua runtime
   install.lua            starter installer
@@ -74,7 +79,7 @@ process and reaches the turtles through the OpenTunnel public URL.
 
 | Layer | Owns | Runs on |
 |---|---|---|
-| Console | registration, stations, mission specs, progress, ore map, dashboard, tunnel publication | Node/TS |
+| Console | registration, stations, mission specs, progress, ore map, operator UI, tunnel publication | Node/TS |
 | Turtle | pose, plan validation, fuel, movement, mining, journal, recovery | CC: Tweaked Lua |
 | Transport | one WebSocket per turtle, JSON, protocol version 1 | `http.websocket` |
 
@@ -97,8 +102,8 @@ Coordinates are station-local:
 - `pose = {x, y, z, f}`.
 - The dock is `{0, 0, 0, 0}` in every station frame.
 
-The server stores a world anchor per station for the dashboard, but the turtle
-never uses world coordinates. Telemetry is station-local.
+The server stores a world anchor per station for the console cross-section, but
+the turtle never uses world coordinates. Telemetry is station-local.
 
 ### 3.1 Dock fixture
 
@@ -417,7 +422,7 @@ GET /api/map?missionId=<id>
 
 returns the mission state, progress, spec, derived tunnel cells up to that
 progress, and the station's ore cells. The counts are included for convenience.
-The dashboard links to this endpoint from each mission row.
+The console links to this endpoint from each mission row.
 
 This design saves the mined map in two parts: the deterministic tunnel cells,
 which are reproducible, and the ore cells, which are not. Vein detour tunnels
@@ -441,12 +446,12 @@ no shared corridors, so v1 has no traffic coordination.
 There is no lease and no TTL in v1. A mission belongs to one turtle until it is
 done or failed. A stale turtle is marked `stale` after `STALE_MS` without a
 heartbeat; its mission is not expired. A human can start, abort, or return it
-from the dashboard.
+from the console.
 
 A lost turtle's station is not reassigned. The turtle id and station id persist.
-The operator can inspect the dashboard, rescue the turtle, or start a new
-mission on the same station. Re-mining a sector is possible: the old tunnels are
-air, the remaining ores are still there, and the plan is deterministic.
+The operator can inspect the console, rescue the turtle, or start a new mission
+on the same station. Re-mining a sector is possible: the old tunnels are air,
+the remaining ores are still there, and the plan is deterministic.
 
 `STATION_SPACING` must be larger than `2 * SECTOR_HALF + margin`. The default
 256 is comfortable for half 48. If the sector half is raised toward 128, raise
@@ -562,14 +567,20 @@ The server creates a mission in `offered`. When a turtle connects:
 
 - If it has an active or offered mission, the welcome includes it and the server
   re-sends `startMission`.
-- If it has no mission and no mission history, the server creates and starts the
-  first mission automatically.
-- If it has no mission but has history, the server waits for the dashboard
-  start. This is the rule after a done or failed mission.
-- If the mission is paused, the server does not offer it. The dashboard start
+- If it is a miner with no mission and no mission history, the server creates
+  and starts the first mission automatically. Turtles with another role do not
+  auto-start a branch mine.
+- If it has no mission but has history, the server waits for the console start.
+  This is the rule after a done or failed mission.
+- If the mission is paused, the server does not offer it. The console start
   resumes it.
 - If the turtle reports `paused` or `halted` in its hello, the server does not
   re-offer an active mission. The local state wins until an explicit start.
+
+The `miner` role is also enforced at the control endpoint. A `lumberjack`,
+`hauler`, or `unassigned` turtle rejects `start`; the mining board only lists
+miners. The role is routing metadata, not a claim that the forestry or hauling
+runtime exists.
 
 `returnHome` pauses the mission. The turtle returns to the dock, sets its local
 `paused` flag, and reports `paused`. A reboot does not auto-resume a paused
@@ -607,15 +618,19 @@ flushes on SIGINT and SIGTERM.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/` | none | dashboard |
+| GET | `/` | none | built console, or a setup page if `web/dist` is absent |
 | GET | `/api/health` | none | liveness |
 | GET | `/api/tunnel` | none | current public URL |
 | POST | `/api/register` | none | create or re-authenticate a turtle |
-| GET | `/api/state` | admin | turtles, stations, missions, events |
+| GET | `/api/state` | admin | full console snapshot |
+| GET | `/api/export` | admin | download the raw `state.json` |
 | GET | `/api/map?missionId=` | admin | derived tunnel cells plus ore cells |
-| POST | `/api/turtles/<id>/start` | admin | create or resume a mission |
+| POST | `/api/turtles/<id>/start` | admin | create or resume a mission (miners only) |
 | POST | `/api/turtles/<id>/return` | admin | pause and return home |
 | POST | `/api/turtles/<id>/abort` | admin | fail the mission |
+| POST | `/api/turtles/<id>/ping` | admin | ask for a fresh hello |
+| POST | `/api/turtles/<id>/label` | admin | body `{"label":"Ward"}` |
+| POST | `/api/turtles/<id>/role` | admin | body `{"role":"miner"}` |
 
 Admin authentication is `Authorization: Bearer <ADMIN_TOKEN>` or
 `?token=<ADMIN_TOKEN>`. If `ADMIN_TOKEN` is empty, every endpoint is open to
@@ -624,14 +639,44 @@ acceptable for a public server.
 
 Registration is open by design. It requires a 16 to 64 character hex id and a 32
 to 128 character hex secret. A re-registration with the same id must present the
-same secret. The server hashes the secret with SHA-256 before storing it.
+same secret. The server hashes the secret with SHA-256 before storing it. New
+turtles start as miners; the operator can change the role to `lumberjack`,
+`hauler`, or `unassigned` without re-registering.
 
-### 12.2 Dashboard
+The realtime channel is Socket.IO on the same origin at `/socket.io`. It uses
+the same admin token through `auth.token` or `?token=`. On connect it emits one
+full `state` snapshot; after that it emits the full snapshot on store changes
+(debounced 250 ms) and every 30 seconds for a fresh server clock. The browser
+fetches `/api/state` once at startup and falls back to a 10 second poll only
+while the socket is disconnected.
 
-The dashboard shows the tunnel URL, each turtle's label, id, station, state,
-pose, fuel, mission state, progress bar, map link, and start/return/abort
-buttons. It polls `/api/state` every 2 seconds. The event log shows the last 12
-events.
+### 12.2 Operator console
+
+The frontend lives in `console/web` and is built with Vite, React, TypeScript,
+Tailwind, and shadcn/ui primitives. `npm run build` writes
+`console/web/dist`; `src/http.ts` serves those assets and falls back to
+`index.html` for app routes. In development Vite proxies `/api` and
+`/socket.io` to port 3000.
+
+The console is one tab per domain:
+
+- **Command deck.** Attention queue, fleet readiness, a live SVG mine
+  cross-section, 24-hour ore throughput, the ore ledger, and recent activity.
+- **Mining.** A miner-only mission board, selected mission geometry, sector
+  schematic, start/return/abort controls, and mission history.
+- **Forestry.** A UI preview of a harvest queue, grove layout, species mix, and
+  job supervision. It uses local sample data; there is no Lua lumberjack runtime
+  and no backend persistence.
+- **Fleet.** Filterable roster with roles, state, station, mission progress,
+  fuel, hold, and a detail sheet for rename, role, ping, and mission control.
+- **Event log.** Live or frozen event stream with kind, turtle, time, text, and
+  payload filters.
+- **Settings.** Geometry and safety readouts, access state, install command, and
+  a state export.
+
+The console reads roles from the snapshot. Readiness, the fleet filters, and
+mission routing all use the same `miner | lumberjack | hauler | unassigned`
+field, so there is no second source of truth for who may start a branch mine.
 
 The progress bar uses the server-computed `percent`, which is the number of plan
 blocks completed divided by the plan total. It is not a per-trip counter.
@@ -642,7 +687,7 @@ blocks completed divided by the plan total. It is not a per-trip counter.
 
 `console/src/index.ts` does this:
 
-1. Start the HTTP server and WebSocket hub.
+1. Start the HTTP server, turtle WebSocket hub, and Socket.IO realtime channel.
 2. Resolve the public tunnel. `PUBLIC_URL` wins. Otherwise the console runs
    `opentunnel route add <PORT>` and parses the `https://...` URL. If that fails,
    it runs `opentunnel status`.
@@ -774,8 +819,9 @@ The smoke test exercises:
 - `/api/health`
 - `/api/register`
 - `/api/state`
+- `/api/export`
 - a WebSocket hello, welcome, startMission, ack, progress, result
-- the dashboard start after a done mission
+- the console start after a done mission
 - `/api/map` derived cells and an ore event
 
 The map test sends an `ore` event and verifies that the ore appears in
@@ -789,7 +835,7 @@ Implemented:
 2. One-turtle trip executor with bounded vein mining, unload, refuel, and boot
    recovery.
 3. WebSocket link, outbox, tunnel refresh, heartbeat, telemetry.
-4. Console registration, station assignment, mission creation, dashboard, map,
+4. Console registration, station assignment, mission creation, operator console, map,
    pause/abort/return.
 5. Starter installer, runtime manifest, fixed-tag release publishing.
 6. 20 Lua tests and a passing TypeScript typecheck.
@@ -821,7 +867,7 @@ is done, failed, or paused. A lost turtle's mission is not expired, and its
 sector is not reassigned. A human decides when to intervene.
 
 **Paused and halted state.** A local `paused` or `halted` flag blocks automatic
-resume after a reboot. The dashboard start is the explicit resume. If the server
+resume after a reboot. The console start is the explicit resume. If the server
 loses a paused result, the hello's state still blocks the re-offer.
 
 **Fuel chest discipline.** The turtle pulls from the chest above the dock. If
@@ -868,9 +914,15 @@ Console:
 cd console
 cp .env.example .env
 # edit .env: PORT, ADMIN_TOKEN, GITHUB_REPO, RELEASE_TAG, geometry
+openssl rand -hex 32   # paste into ADMIN_TOKEN
 npm install
+npm run build
 npm start
 ```
+
+The server loads `console/.env` automatically; shell environment variables win
+over the file. Open the console with `?token=<ADMIN_TOKEN>` once to store the
+token in the browser.
 
 Before the first start:
 
@@ -895,7 +947,7 @@ wget https://github.com/Igidn/cc-util/releases/download/tunnel-latest/install.lu
 install
 ```
 
-Open the dashboard. The first mission starts automatically. After it finishes,
-use start for the next mission, return to pause, and abort to fail and recall.
-The map link on each mission row returns the derived tunnel cells and saved ore
-cells.
+Open the console. A miner's first mission starts automatically. A turtle with
+another role waits for a matching runtime instead. After a mission finishes, use
+start for the next one, return to pause, and abort to fail and recall. The map
+link on each mission row returns the derived tunnel cells and saved ore cells.

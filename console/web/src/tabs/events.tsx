@@ -91,8 +91,8 @@ export function EventsTab() {
 
   const hourAgo = now - 3_600_000;
   const dayAgo = now - 86_400_000;
-  const lastHour = snapshot.events.filter((event) => event.at >= hourAgo).length;
-  const faults = snapshot.events.filter(
+  const lastHour = (snapshot.events ?? []).filter((event) => event.at >= hourAgo).length;
+  const faults = (snapshot.events ?? []).filter(
     (event) =>
       event.at >= dayAgo &&
       (event.kind === "fault" ||
@@ -228,7 +228,7 @@ export function EventsTab() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">all turtles</SelectItem>
-                {snapshot.turtles.map((turtle) => (
+                {(snapshot.turtles ?? []).map((turtle) => (
                   <SelectItem key={turtle.id} value={turtle.id}>
                     {turtleName(turtle)}
                   </SelectItem>

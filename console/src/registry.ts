@@ -41,6 +41,14 @@ export function register(body: unknown):
       y: config.baseY,
       z: config.baseZ,
     },
+    name: `Station ${index + 1}`,
+    shaftPose: null,
+    roomPose: null,
+    built: false,
+    storageChestCount: 32,
+    storageChestsFilled: 0,
+    depotNotifiedAt: null,
+    haulerEvacuatingAt: null,
     createdAt: Date.now(),
   };
   const turtle: Turtle = {

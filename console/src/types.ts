@@ -1,7 +1,9 @@
 export type {
+  Chest,
   EventRecord,
   Facing,
   InventoryItem,
+  ItemRequest,
   Mission,
   MissionSpec,
   MissionState,
@@ -14,6 +16,7 @@ export type {
   PublicConfig,
   PublicTurtle,
   Sector,
+  ShaftLock,
   Snapshot,
   SnapshotCounts,
   Station,

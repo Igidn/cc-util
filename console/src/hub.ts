@@ -88,6 +88,7 @@ class Hub {
           v: 1,
           type: "welcome",
           turtleId: turtle.id,
+          role: turtle.role,
           station: store.data.stations[turtle.stationId],
           config: {
             reserve: config.reserve,
@@ -369,11 +370,22 @@ class Hub {
   setRole(turtleId: string, role: string): boolean {
     const turtle = store.data.turtles[turtleId];
     if (!turtle) return false;
-    if (!["miner", "lumberjack", "hauler", "unassigned"].includes(role)) return false;
+    if (!["miner", "lumberjack", "hauler", "unassigned", "station_builder"].includes(role)) return false;
     turtle.role = role as TurtleRole;
     store.event(turtle.id, "role_changed", { role });
     store.save();
     return true;
+  }
+
+  assignRole(turtleId: string, role: string): boolean {
+    const turtle = store.data.turtles[turtleId];
+    if (!turtle) return false;
+    if (!["miner", "lumberjack", "hauler", "unassigned", "station_builder"].includes(role)) return false;
+    turtle.role = role as TurtleRole;
+    store.event(turtle.id, "role_changed", { role });
+    store.save();
+    // Notify the turtle over the WebSocket so it can switch runtimes.
+    return this.sendCommand(turtleId, "assignRole", { role });
   }
 
   private sendRaw(ws: WebSocket, message: string): void {
@@ -481,6 +493,9 @@ class Hub {
       ores: tallies,
       oreRecent: oreRecent.slice(-80),
       oreCounts,
+      chests: Object.values(store.data.chests),
+      requests: Object.values(store.data.requests),
+      shaftLocks: Object.values(store.data.shaftLocks),
     };
   }
 }
