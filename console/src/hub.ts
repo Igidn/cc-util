@@ -1,11 +1,21 @@
 import { randomUUID } from "node:crypto";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { authenticate, publicTurtle } from "./registry.js";
 import { ensureMission, missionSummary } from "./mission.js";
 import { store } from "./store.js";
-import type { InventoryItem, Mission, Pose, Progress, Station, Turtle } from "./types.js";
+import type {
+  InventoryItem,
+  Mission,
+  OreTally,
+  Pose,
+  Progress,
+  PublicConfig,
+  Snapshot,
+  Turtle,
+  TurtleRole,
+} from "./types.js";
 
 type Conn = { ws: WebSocket; turtle: Turtle; alive: boolean };
 
@@ -24,8 +34,20 @@ class Hub {
   tunnelUrl = "";
 
   attach(server: Server): void {
-    this.wss = new WebSocketServer({ server, path: "/ws" });
+    this.wss = new WebSocketServer({ noServer: true });
     this.wss.on("connection", (ws) => this.onConnection(ws));
+
+    // Route turtle upgrades ourselves. Attaching two WebSocketServer
+    // instances with `path` to the same HTTP server makes one of them answer
+    // 400 for the other's path (Socket.IO in particular).
+    server.on("upgrade", (req: IncomingMessage, socket, head) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (url.pathname !== "/ws" || !this.wss) return;
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.wss?.emit("connection", ws, req);
+      });
+    });
+
     setInterval(() => this.checkStale(), Math.max(5000, Math.floor(config.staleMs / 2))).unref();
   }
 
@@ -246,6 +268,7 @@ class Hub {
   private reoffer(turtle: Turtle): void {
     const conn = this.connections.get(turtle.id);
     if (!conn) return;
+    if (turtle.role !== "miner" && turtle.role !== "lumberjack") return;
     const station = store.data.stations[turtle.stationId];
     if (!station) return;
     if (turtle.state === "paused" || turtle.state === "halted") return;
@@ -320,12 +343,37 @@ class Hub {
   start(turtleId: string): boolean {
     const turtle = store.data.turtles[turtleId];
     const station = turtle ? store.data.stations[turtle.stationId] : undefined;
-    if (!turtle || !station) return false;
+    if (!turtle || !station || (turtle.role !== "miner" && turtle.role !== "lumberjack")) return false;
     const mission = ensureMission(turtle, station);
     mission.state = "active";
     turtle.missionId = mission.id;
     store.save();
     return this.sendCommand(turtleId, "startMission", { mission: { id: mission.id, spec: mission.spec } });
+  }
+
+  ping(turtleId: string): boolean {
+    if (!store.data.turtles[turtleId]) return false;
+    return this.sendCommand(turtleId, "ping");
+  }
+
+  setLabel(turtleId: string, label: string): boolean {
+    const turtle = store.data.turtles[turtleId];
+    if (!turtle) return false;
+    const clean = label.trim().slice(0, 40);
+    turtle.label = clean || undefined;
+    store.event(turtle.id, "renamed", { label: turtle.label ?? null });
+    store.save();
+    return true;
+  }
+
+  setRole(turtleId: string, role: string): boolean {
+    const turtle = store.data.turtles[turtleId];
+    if (!turtle) return false;
+    if (!["miner", "lumberjack", "hauler", "unassigned"].includes(role)) return false;
+    turtle.role = role as TurtleRole;
+    store.event(turtle.id, "role_changed", { role });
+    store.save();
+    return true;
   }
 
   private sendRaw(ws: WebSocket, message: string): void {
@@ -355,14 +403,84 @@ class Hub {
     }
   }
 
-  snapshot() {
+  snapshot(): Snapshot {
+    const now = Date.now();
+    const turtles = Object.values(store.data.turtles).map(publicTurtle);
+    const online = [...this.connections.keys()];
+    const allMissions = Object.values(store.data.missions);
+    const missions = allMissions
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 200)
+      .map(missionSummary);
+
+    const oreTotals = new Map<string, number>();
+    const oreCounts: Record<string, number> = {};
+    const oreRecent: { x: number; y: number; z: number; name: string; stationId: string }[] = [];
+    let ores = 0;
+    for (const [stationId, map] of Object.entries(store.data.maps)) {
+      const cells = Object.values(map.ores ?? {});
+      oreCounts[stationId] = cells.length;
+      ores += cells.length;
+      for (const cell of cells) {
+        oreTotals.set(cell.name, (oreTotals.get(cell.name) ?? 0) + 1);
+        oreRecent.push({ ...cell, stationId });
+      }
+    }
+
+    const tallies: OreTally[] = [...oreTotals.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const publicConfig: PublicConfig = {
+      port: config.port,
+      sectorHalf: config.sectorHalf,
+      topWorldY: config.topWorldY,
+      bottomWorldY: config.bottomWorldY,
+      layerStep: config.layerStep,
+      branchSpacing: config.branchSpacing,
+      reserve: config.reserve,
+      maxTripBlocks: config.maxTripBlocks,
+      maxVeinBlocks: config.maxVeinBlocks,
+      maxRadius: config.maxRadius,
+      maxDepth: config.maxDepth,
+      baseX: config.baseX,
+      baseY: config.baseY,
+      baseZ: config.baseZ,
+      stationSpacing: config.stationSpacing,
+      heartbeatMs: config.heartbeatMs,
+      staleMs: config.staleMs,
+      adminRequired: Boolean(config.adminToken),
+      publish: config.publish,
+      githubRepo: config.githubRepo,
+      releaseTag: config.releaseTag,
+    };
+
     return {
+      serverTime: now,
       tunnelUrl: this.tunnelUrl,
-      online: [...this.connections.keys()],
-      turtles: Object.values(store.data.turtles).map(publicTurtle),
+      online,
+      config: publicConfig,
+      counts: {
+        turtles: turtles.length,
+        online: online.length,
+        miners: turtles.filter((turtle) => turtle.role === "miner").length,
+        lumberjacks: turtles.filter((turtle) => turtle.role === "lumberjack").length,
+        activeMissions: missions.filter((mission) => mission.state === "active" || mission.state === "offered").length,
+        pausedMissions: missions.filter((mission) => mission.state === "paused").length,
+        failedMissions: missions.filter(
+          (mission) => mission.state === "failed" && now - mission.updatedAt < 86_400_000,
+        ).length,
+        ores,
+        blocks: missions.reduce((sum, mission) => sum + mission.stats.blocks, 0),
+        trips: missions.reduce((sum, mission) => sum + mission.stats.trips, 0),
+      },
+      turtles,
       stations: Object.values(store.data.stations),
-      missions: Object.values(store.data.missions).map(missionSummary),
+      missions,
       events: store.data.events.slice(-200).reverse(),
+      ores: tallies,
+      oreRecent: oreRecent.slice(-80),
+      oreCounts,
     };
   }
 }

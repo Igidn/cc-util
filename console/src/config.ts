@@ -1,8 +1,44 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
+
+/**
+ * Load the local .env before reading configuration. Real environment variables
+ * win, so `DATA_DIR=data/demo npm start` still overrides the file.
+ */
+function loadEnvFile(file: string): void {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return;
+  }
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const split = line.indexOf("=");
+    if (split < 1) continue;
+    const key = line.slice(0, split).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key] !== undefined) continue;
+
+    let value = line.slice(split + 1).trim();
+    if (value.startsWith('"') || value.startsWith("'")) {
+      const quote = value[0];
+      const end = value.indexOf(quote, 1);
+      if (end !== -1) value = value.slice(1, end);
+    } else {
+      value = value.replace(/\s+#.*$/, "").trim();
+    }
+    process.env[key] = value.replace(/\\n/g, "\n");
+  }
+}
+
+loadEnvFile(path.join(root, ".env"));
 
 function num(key: string, fallback: number): number {
   const value = Number(process.env[key]);

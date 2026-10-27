@@ -47,6 +47,7 @@ export function register(body: unknown):
     id,
     secretHash: hashSecret(secret),
     stationId: station.id,
+    role: "miner",
     computerId: typeof input.computerId === "number" ? input.computerId : undefined,
     label: typeof input.label === "string" ? input.label : undefined,
     createdAt: Date.now(),
@@ -74,6 +75,7 @@ export function publicTurtle(turtle: Turtle) {
   return {
     id: turtle.id,
     stationId: turtle.stationId,
+    role: turtle.role ?? "miner",
     computerId: turtle.computerId,
     label: turtle.label,
     createdAt: turtle.createdAt,

@@ -1,6 +1,7 @@
 import { buildLegs } from "./plan.js";
 import { store } from "./store.js";
 import type { Mission, MissionSpec, OreCell, Progress, Vec3 } from "./types.js";
+import { isBranchMineSpec, isMiningProgress } from "../shared/api.js";
 
 const DX = [0, 1, 0, -1] as const;
 const DZ = [-1, 0, 1, 0] as const;
@@ -13,6 +14,9 @@ const DZ = [-1, 0, 1, 0] as const;
  * need to store every tunnel cell.
  */
 export function planCells(spec: MissionSpec, progress: Progress): Vec3[] {
+  if (!isBranchMineSpec(spec) || !isMiningProgress(progress)) {
+    return [];
+  }
   const legs = buildLegs(spec);
   const cells: Vec3[] = [];
   let x = spec.base.x;

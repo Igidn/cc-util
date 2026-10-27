@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import type { MissionSpec, Progress } from "./types.js";
+import { isBranchMineSpec, isMiningProgress } from "../shared/api.js";
 
 export type Leg = {
   kind: "down" | "line";
@@ -16,6 +17,9 @@ export type Leg = {
  * simple reverse of the route taken.
  */
 export function buildLegs(spec: MissionSpec): Leg[] {
+  if (!isBranchMineSpec(spec)) {
+    throw new Error("buildLegs only supports branchMine missions");
+  }
   const half = spec.maxRadius;
   const legs: Leg[] = [];
 
@@ -65,6 +69,51 @@ export function totalBlocks(legs: Leg[]): number {
   return legs.reduce((sum, leg) => sum + leg.length, 0);
 }
 
+/** Plan geometry is immutable per spec. Cache it for snapshots and maps. */
+const legCache = new Map<string, Leg[]>();
+
+function specKey(spec: MissionSpec): string {
+  if (!isBranchMineSpec(spec)) throw new Error("specKey only supports branchMine");
+  return [
+    spec.maxRadius,
+    spec.staging,
+    spec.startY,
+    spec.endY,
+    spec.layerStep,
+    spec.spacing,
+  ].join(":");
+}
+
+export function cachedLegs(spec: MissionSpec): Leg[] {
+  if (!isBranchMineSpec(spec)) throw new Error("cachedLegs only supports branchMine");
+  const key = specKey(spec);
+  const hit = legCache.get(key);
+  if (hit) return hit;
+  const legs = buildLegs(spec);
+  if (legCache.size > 64) legCache.clear();
+  legCache.set(key, legs);
+  return legs;
+}
+
+export function planSummary(spec: MissionSpec): {
+  totalBlocks: number;
+  layers: number;
+  strips: number;
+} {
+  if (!isBranchMineSpec(spec)) throw new Error("planSummary only supports branchMine");
+  const legs = cachedLegs(spec);
+  let layers = 0;
+  let strips = 0;
+  for (const leg of legs) {
+    if (leg.kind === "line") {
+      layers = Math.max(layers, leg.layer + 1);
+      strips = Math.max(strips, leg.strip + 1);
+    }
+  }
+  return { totalBlocks: totalBlocks(legs), layers, strips };
+}
+
+
 export function blocksBefore(legs: Leg[], legIndex: number): number {
   let sum = 0;
   for (let i = 0; i < Math.min(legIndex - 1, legs.length); i++) sum += legs[i].length;
@@ -74,12 +123,13 @@ export function blocksBefore(legs: Leg[], legIndex: number): number {
 export function progressPercent(legs: Leg[], progress: Progress): number {
   const total = totalBlocks(legs);
   if (total === 0) return 100;
+  if (!isMiningProgress(progress)) return 0;
   const done = blocksBefore(legs, progress.leg) + Math.max(0, progress.offset);
   return Math.min(100, Math.round((done / total) * 1000) / 10);
 }
 
 export function validateSpec(spec: MissionSpec): { ok: true } | { ok: false; error: string } {
-  if (spec.kind !== "branchMine") return { ok: false, error: "unknown mission kind" };
+  if (!isBranchMineSpec(spec)) return { ok: false, error: "unknown mission kind" };
   if (!Number.isFinite(spec.maxRadius) || spec.maxRadius < 4) return { ok: false, error: "maxRadius too small" };
   if (spec.maxRadius > config.maxRadius) return { ok: false, error: `maxRadius exceeds local cap ${config.maxRadius}` };
   if (!Number.isFinite(spec.staging) || spec.staging < 0 || spec.staging > 4) {

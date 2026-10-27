@@ -2,12 +2,14 @@ import { config } from "./config.js";
 import { createServer } from "./http.js";
 import { hub } from "./hub.js";
 import { publishRelease, releaseBase, writeRuntime } from "./publish.js";
+import { attachRealtime, closeRealtime } from "./realtime.js";
 import { store } from "./store.js";
 import { ensureTunnel } from "./tunnel.js";
 
 async function main(): Promise<void> {
   const server = createServer();
   hub.attach(server);
+  attachRealtime(server);
 
   await new Promise<void>((resolve) => {
     server.listen(config.port, config.host, resolve);
@@ -40,15 +42,19 @@ async function main(): Promise<void> {
       `  wget ${releaseBase()}/install.lua install.lua`,
       "  install",
       "",
-      `dashboard: http://${config.host}:${config.port}${config.adminToken ? "/?token=<ADMIN_TOKEN>" : ""}`,
+      `console:  http://${config.host}:${config.port}${config.adminToken ? "/?token=<ADMIN_TOKEN>" : ""}`,
+      `realtime: socket.io on the same origin`,
+      `rebuild:  npm run build (serves console/web/dist)`,
       "",
     ].join("\n"),
   );
 
   const shutdown = () => {
     store.flush();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 1500).unref();
+    void closeRealtime().finally(() => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 1500).unref();
+    });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
