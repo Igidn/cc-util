@@ -130,11 +130,25 @@ end
 -- Shaft digging (surface to Y10)
 ----------------------------------------------------------------------
 
-local function digShaftToY10(navInstance, surfaceY, targetY)
+local function digShaftToY10(navInstance, surfaceY, targetY, staging)
+  staging = staging or 1
   local currentY = navInstance.pose.y
   if currentY <= targetY then
     util.log(("station_builder: already at or below target Y%d"):format(targetY))
     return true
+  end
+
+  -- Step into the shaft (staging leg) before digging down.
+  -- The shaft top is one block north of the dock.
+  util.log("station_builder: stepping into shaft (staging)")
+  local ok, err = nav.forward(navInstance, 1)
+  if not ok then
+    hal.dig()
+    ok = nav.forward(navInstance, 1)
+    if not ok then
+      util.log("station_builder: cannot step into shaft:", err or "unknown")
+      return false
+    end
   end
 
   local depth = currentY - targetY
