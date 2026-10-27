@@ -39,6 +39,8 @@ end
 function M.acquire(tunnel, stationId, turtleId, purpose)
   purpose = purpose or "transit"
 
+  util.log("shaft: acquiring lock for", stationId, "turtle", turtleId)
+
   local text, err = httpPostJson(tunnel .. "/api/shaft/" .. stationId .. "/acquire", {
     turtleId = turtleId,
     purpose = purpose,
@@ -47,6 +49,7 @@ function M.acquire(tunnel, stationId, turtleId, purpose)
     util.log("shaft: acquire request failed:", err or "no response")
     return nil
   end
+  util.log("shaft: acquire response:", text)
   local data = util.jsonDecode(text)
   if not data then
     util.log("shaft: acquire response malformed")
