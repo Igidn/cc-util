@@ -27,7 +27,8 @@ local HAULER_WAIT_POS = { x = 2, y = 10, z = 2, f = 0 }
 ----------------------------------------------------------------------
 
 local function syncGps()
-  local ok, err = gps.syncPose(nil, hal, true)
+  local initPose = { x = 0, y = 0, z = 0, f = 0 }
+  local ok, err = gps.syncPose(initPose, hal, true)
   if ok then
     util.log("hauler: GPS synced")
     return true

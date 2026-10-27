@@ -68,7 +68,8 @@ local TARGET_Y = 10
 ----------------------------------------------------------------------
 
 local function syncGps()
-  local ok, err = gps.syncPose(nil, hal, true)
+  local initPose = { x = 0, y = 0, z = 0, f = 0 }
+  local ok, err = gps.syncPose(initPose, hal, true)
   if ok then
     util.log("station_builder: GPS synced")
     return true
