@@ -218,7 +218,7 @@ export function itemTone(name: string): string {
 }
 
 export function inventoryStats(inventory?: InventoryItem[] | null) {
-  const items = inventory ?? [];
+  const items = Array.isArray(inventory) ? inventory : [];
   const slots = items.filter((item) => item.count > 0).length;
   const total = items.reduce((sum, item) => sum + item.count, 0);
   return { slots, total, capacity: 16, percent: Math.round((slots / 16) * 100) };
