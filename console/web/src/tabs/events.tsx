@@ -294,7 +294,10 @@ export function EventsTab() {
                     <EventRow
                       key={event.id}
                       event={event}
-                      turtle={turtleNames.get(event.turtleId) ?? event.turtleId.slice(0, 8)}
+                      turtle={
+                        turtleNames.get(event.turtleId ?? "") ??
+                        (event.turtleId ?? "unknown").slice(0, 8)
+                      }
                       now={now}
                       onCopy={() => void copy(event)}
                     />

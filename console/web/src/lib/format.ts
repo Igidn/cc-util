@@ -217,9 +217,10 @@ export function itemTone(name: string): string {
   return "var(--muted-foreground)";
 }
 
-export function inventoryStats(inventory: InventoryItem[] = []) {
-  const slots = inventory.filter((item) => item.count > 0).length;
-  const total = inventory.reduce((sum, item) => sum + item.count, 0);
+export function inventoryStats(inventory?: InventoryItem[] | null) {
+  const items = inventory ?? [];
+  const slots = items.filter((item) => item.count > 0).length;
+  const total = items.reduce((sum, item) => sum + item.count, 0);
   return { slots, total, capacity: 16, percent: Math.round((slots / 16) * 100) };
 }
 
