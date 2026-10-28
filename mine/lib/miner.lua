@@ -390,6 +390,8 @@ local function mine(trip, legs, progress, snap, mission, budget, bus, gate)
     if sinceSave >= SAVE_EVERY then
       save(snap, mission, trip, true)
       progressMsg(bus, mission, snap, trip, "mining")
+      -- Renew the shaft lock TTL so a long mining session never expires it.
+      gate.refresh()
       sinceSave = 0
     end
   end
@@ -433,8 +435,21 @@ local function newShaftGate(tunnel, stationId, id, legs)
     return true
   end
 
+  -- Renew the shaft lock TTL so a long traversal never expires it mid-trip.
+  -- Returns true when the lock is still held (or there is no tunnel), false if
+  -- the lock was already lost (TTL expired or taken by another turtle).
+  function gate.refresh()
+    if not gate.held then return true end
+    if tunnel then return shaft.refresh(tunnel, stationId, id) end
+    return true
+  end
+
   function gate.release()
     if not gate.held then return true end
+    -- Renew the TTL right before releasing so an expired lock doesn't turn the
+    -- release into a 409 Conflict. If the lock was already lost, the server
+    -- treats the release as idempotent (ok: true) anyway.
+    if tunnel then shaft.refresh(tunnel, stationId, id) end
     gate.held = false
     if tunnel then shaft.release(tunnel, stationId, id) end
     return true
@@ -659,6 +674,8 @@ local function transitToRoom(spec, mission, snap, bus, useGps, stationId, id, tu
     if i % 32 == 0 then
       save(snap, mission, trip, true)
       progressMsg(bus, mission, snap, trip, "descending")
+      -- Renew the shaft lock TTL so a long descent never expires it.
+      if tunnel then shaft.refresh(tunnel, stationId, id) end
     end
   end
 
@@ -683,6 +700,7 @@ local function transitToRoom(spec, mission, snap, bus, useGps, stationId, id, tu
   end
   nav.face(trip, 0)
 
+  if tunnel then shaft.refresh(tunnel, stationId, id) end
   if tunnel then shaft.release(tunnel, stationId, id) end
 
   spec.base = pose.copy(trip.pose)
@@ -798,9 +816,12 @@ local function ascendToSurface(spec, mission, snap, bus, stationId, id, tunnel, 
       snap.pose = pose.copy(trip.pose)
       save(snap, mission, nil, false)
       progressMsg(bus, mission, snap, trip, "ascending")
+      -- Renew the shaft lock TTL so a long ascent never expires it.
+      if tunnel then shaft.refresh(tunnel, stationId, id) end
     end
   end
 
+  if tunnel then shaft.refresh(tunnel, stationId, id) end
   if tunnel then shaft.release(tunnel, stationId, id) end
   snap.pose = pose.copy(trip.pose)
   snap.atRoom = false

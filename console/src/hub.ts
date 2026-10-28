@@ -3,7 +3,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { authenticate, publicTurtle } from "./registry.js";
-import { ensureMission, freeMinerLane, missionSummary } from "./mission.js";
+import { ensureMission, freeMinerLane, missionSummary, currentMission } from "./mission.js";
 import { store } from "./store.js";
 import type {
   InventoryItem,
@@ -300,6 +300,17 @@ class Hub {
       return;
     }
     if (!current) {
+      // turtle.missionId may be null after a reboot (state file lost, or a prior
+      // result cleared it). Look up any active mission bound to this turtle by
+      // turtleId so we can re-offer it instead of leaving the turtle idle.
+      const activeByTurtle = currentMission(turtle.id);
+      if (activeByTurtle) {
+        turtle.missionId = activeByTurtle.id;
+        activeByTurtle.state = "active";
+        store.save();
+        this.sendCommand(turtle.id, "startMission", { mission: { id: activeByTurtle.id, spec: activeByTurtle.spec } });
+        return;
+      }
       // Only auto-start the first mission. After a done/failed mission the
       // operator starts the next one from the dashboard.
       const hasHistory = Object.values(store.data.missions).some((m) => m.turtleId === turtle.id);

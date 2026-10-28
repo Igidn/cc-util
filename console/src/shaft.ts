@@ -55,23 +55,28 @@ export function acquireShaft(stationId: string, turtleId: string): { granted: tr
 
 /** Release shaft access. Promotes the next waiter if any. */
 export function releaseShaft(stationId: string, turtleId: string): { ok: true; next?: string } | { ok: false; reason: string } {
-  const lock = store.data.shaftLocks[stationId];
-  if (!lock) {
-    return { ok: false, reason: "no shaft lock for station" };
+  const current = store.data.shaftLocks[stationId];
+  if (!current) {
+    // No lock ever existed for this station; nothing to release. Idempotent.
+    return { ok: true };
   }
-  if (lock.holderTurtleId !== turtleId) {
+  if (current.holderTurtleId === null) {
+    // Lock already released (e.g. TTL expired and force-cleared). Idempotent.
+    return { ok: true };
+  }
+  if (current.holderTurtleId !== turtleId) {
     return { ok: false, reason: "turtle is not the shaft holder" };
   }
 
-  lock.holderTurtleId = null;
-  lock.acquiredAt = null;
-  lock.expiresAt = null;
+  current.holderTurtleId = null;
+  current.acquiredAt = null;
+  current.expiresAt = null;
 
-  const next = lock.queue.shift();
+  const next = current.queue.shift();
   if (next) {
-    lock.holderTurtleId = next;
-    lock.acquiredAt = Date.now();
-    lock.expiresAt = Date.now() + SHAFT_TTL_MS;
+    current.holderTurtleId = next;
+    current.acquiredAt = Date.now();
+    current.expiresAt = Date.now() + SHAFT_TTL_MS;
     store.save();
     return { ok: true, next };
   }
