@@ -574,6 +574,16 @@ function M.run(id, bus)
   local stationId = bus.station and bus.station.id or "s0"
   local turtleId = id
 
+  -- A builder is a one-shot role. If this station is already built, do not
+  -- rebuild on top of it (a reboot used to re-run the builder and overwrite the
+  -- reported geometry and chest coordinates with a shifted copy). Finish the
+  -- builder's normal life cycle by handing the turtle to the hauler instead.
+  if bus.station and bus.station.built and bus.station.shaftPose then
+    util.log("station_builder: station already built; not rebuilding")
+    transitionToHauler(tunnel, turtleId)
+    return "transition_to_hauler"
+  end
+
   -- 1. GPS sync
   local gpsOk = syncGps()
   if not gpsOk then

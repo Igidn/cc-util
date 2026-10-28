@@ -1064,6 +1064,25 @@ do
 end
 
 -- ============================================================================
+-- TEST 5d: A builder must not rebuild an already-built station
+-- ============================================================================
+
+do
+  print("\n== TEST 5d: Builder refuses to rebuild a built station ==")
+  resetWorld(STONE)
+  resetTurtle(0, 5, 0, 0, 1000)
+  local before = getBlock(0, 4, 0)
+  local bus = {
+    serverUrl = "http://sim",
+    station = { id = "s0", built = true, shaftPose = { x = 0, y = 5, z = 0, f = 0 } },
+    pose = { x = 0, y = 5, z = 0, f = 0 },
+  }
+  local result = station_builder.run("test-builder", bus)
+  check("builder hands over instead of rebuilding", result == "transition_to_hauler", tostring(result))
+  check("builder did not dig the world", getBlock(0, 4, 0) == before)
+end
+
+-- ============================================================================
 -- TEST 6: Full station builder + miner integration
 -- ============================================================================
 
