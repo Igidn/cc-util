@@ -262,14 +262,17 @@ export function createServer(): Server {
         }
         const id = decodeURIComponent(control[1]);
         const op = control[2];
+        if (op === "start") {
+          const result = hub.start(id);
+          json(res, result.ok ? 200 : 409, result);
+          return;
+        }
         const ok =
-          op === "start"
-            ? hub.start(id)
-            : op === "abort"
-              ? hub.abort(id)
-              : op === "return"
-                ? hub.returnHome(id)
-                : hub.ping(id);
+          op === "abort"
+            ? hub.abort(id)
+            : op === "return"
+              ? hub.returnHome(id)
+              : hub.ping(id);
         json(res, ok ? 200 : 409, { ok });
         return;
       }
@@ -435,10 +438,7 @@ export function createServer(): Server {
       }
 
       if (req.method === "GET" && url.pathname === "/api/requests") {
-        if (!authorized(req, url)) {
-          json(res, 401, { ok: false, error: "unauthorized" });
-          return;
-        }
+        // Turtles poll for work over HTTP without an admin token.
         const stationId = url.searchParams.get("stationId") ?? undefined;
         const status = url.searchParams.get("status") as ("pending" | "assigned" | "delivered" | "cancelled") | undefined;
         json(res, 200, { ok: true, requests: listRequests(stationId, status) });
@@ -570,6 +570,31 @@ export function createServer(): Server {
         const dockPose = parsePose(body.dockPose);
         if (!shaftPose || !roomPose || !dockPose) {
           json(res, 400, { ok: false, error: "invalid station geometry" });
+          return;
+        }
+        // A station built from inside an existing room reports its own level as
+        // the "surface": the shaft is then 0-1 blocks tall and miners cannot
+        // reserve fuel for the real climb. Reject that instead of saving it.
+        if (shaftPose.y <= roomPose.y + 1) {
+          json(res, 400, {
+            ok: false,
+            error: `shaft top Y${shaftPose.y} is not above the room Y${roomPose.y}; start the station builder on the surface`,
+          });
+          return;
+        }
+        if (dockPose.y !== roomPose.y) {
+          json(res, 400, {
+            ok: false,
+            error: `dock Y${dockPose.y} must match the room walking level Y${roomPose.y}`,
+          });
+          return;
+        }
+        const dockStep = Math.abs(dockPose.x - roomPose.x) + Math.abs(dockPose.z - roomPose.z);
+        if (dockStep !== 1) {
+          json(res, 400, {
+            ok: false,
+            error: "dock must be one block from the shaft column",
+          });
           return;
         }
         station.shaftPose = shaftPose;

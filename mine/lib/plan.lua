@@ -19,10 +19,17 @@ end
 
 function M.build(spec)
   local half = spec.maxRadius
+  local staging = spec.staging or 1
+  -- Lanes split the sector along X. Both miners share the same Z range, so
+  -- each one gets its own X slice and they never mine the same blocks.
+  local x0 = spec.sector and spec.sector.x0 or -half
+  local x1 = spec.sector and spec.sector.x1 or half
+  local z0 = spec.sector and spec.sector.z0 or (-half - staging)
+  local z1 = spec.sector and spec.sector.z1 or (half - staging)
   local legs = {}
 
   -- The dock is one block south of the shaft top; step into the shaft first.
-  addLine(legs, 0, spec.staging or 1, 0, 0)
+  addLine(legs, 0, staging, 0, 0)
 
   if spec.startY < 0 then
     legs[#legs + 1] = {
@@ -34,11 +41,17 @@ function M.build(spec)
     }
   end
 
-  -- From the shaft centre to the -X,-Z corner.
-  addLine(legs, 3, half, 0, 0) -- west
-  addLine(legs, 0, half, 0, 0) -- north
+  -- From the shaft centre to the west edge of the lane, then north to its
+  -- first row.
+  if x0 < 0 then
+    addLine(legs, 3, -x0, 0, 0) -- west
+  elseif x0 > 0 then
+    addLine(legs, 1, x0, 0, 0) -- east
+  end
+  addLine(legs, 0, (-staging) - z0, 0, 0) -- north
 
-  local strips = math.floor((2 * half) / spec.spacing) + 1
+  local width = x1 - x0
+  local strips = math.floor((z1 - z0) / spec.spacing) + 1
   local y = spec.startY
   local layer = 0
   local zDir = 1
@@ -46,7 +59,7 @@ function M.build(spec)
 
   while y >= spec.endY do
     for strip = 0, strips - 1 do
-      addLine(legs, xDir, 2 * half, layer, strip)
+      addLine(legs, xDir, width, layer, strip)
       xDir = (xDir == 1) and 3 or 1
       if strip < strips - 1 then
         addLine(legs, zDir == 1 and 2 or 0, spec.spacing, layer, strip)

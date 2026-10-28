@@ -84,6 +84,10 @@ export const config = {
   maxRadius: num("MAX_RADIUS", 128),
   maxDepth: num("MAX_DEPTH", 200),
 
+  // Miners per station. The sector is split into this many X lanes so two
+  // miners at one station never mine the same blocks.
+  minerLanes: num("MINER_LANES", 2),
+
   // Stations are laid out along X. The operator sets the world anchor.
   baseX: num("BASE_X", 0),
   baseY: num("BASE_Y", 10),

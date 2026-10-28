@@ -12,6 +12,10 @@ export type MissionSpec =
       baseVersion?: number;
       staging: number;
       sector: Sector;
+      /** X lane this miner owns when a station is shared. */
+      lane?: number;
+      /** Number of lanes the sector was split into. */
+      laneCount?: number;
       startY: number;
       endY: number;
       layerStep: number;
@@ -72,6 +76,11 @@ export type Station = {
   roomPose: Pose | null;
   /** Miner dock inside the room: one block south of the shaft column. */
   dockPose: Pose | null;
+  /**
+   * Stable lane per miner for this station. The mining sector is split along
+   * X so two miners never work the same blocks.
+   */
+  minerLanes?: Record<string, number>;
   built: boolean;
   storageChestCount: number;
   storageChestsFilled: number;

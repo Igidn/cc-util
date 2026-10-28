@@ -667,7 +667,14 @@ test("miner descends the station shaft to the room and mines from there", functi
     },
     progress = { leg = 1, offset = 0, layer = 0, strip = 0 },
   }
-  local bus = { outbox = {}, send = function() end }
+  -- A station built from the wrong level reports the room itself as the
+  -- shaft top. The miner must still remember the real surface it started from
+  -- so it reserves fuel for the climb.
+  local bus = {
+    outbox = {},
+    send = function() end,
+    station = { id = "s0", shaftPose = { x = 0, y = 10, z = 0, f = 0 } },
+  }
   local result, err = miner.run(mission, bus)
   _G.gps = savedGps
   if result ~= "done" then print("transit miner error: " .. tostring(err)) end
@@ -677,6 +684,58 @@ test("miner descends the station shaft to the room and mines from there", functi
   local loaded = state.load(function() return t.fuel end)
   eq("transit atRoom cleared", loaded.atRoom, false)
   eq("transit surface Y recorded", loaded.surfaceY, 20)
+end)
+
+test("miner walks to the shaft top from the surface before descending", function()
+  resetStore(nil, nil)
+  snapshots = {}
+  files = {}
+  state.resetJournal()
+
+  local t = newTurtle()
+  -- Three blocks east of the shaft column on the surface.
+  t.x, t.y, t.z, t.f = 3, 20, 0, 0
+  t.fuel = 1000
+  mock.turtle = t
+  hal.setBackend(mock)
+
+  for y = 10, 20 do t.air[key(0, y, 0)] = true end
+  t.air[key(0, 10, 1)] = true
+  t.air[key(1, 20, 0)] = true
+  t.air[key(2, 20, 0)] = true
+
+  local savedGps = _G.gps
+  _G.gps = { locate = function() return mock.turtle.x, mock.turtle.y, mock.turtle.z end }
+
+  local mission = {
+    id = "walk-test-1",
+    spec = {
+      kind = "branchMine",
+      base = { x = 0, y = 10, z = 1, f = 0 },
+      staging = 1,
+      sector = { x0 = -4, z0 = -5, x1 = 4, z1 = 1 },
+      startY = -4,
+      endY = -4,
+      layerStep = 2,
+      spacing = 3,
+      maxRadius = 4,
+      maxTripBlocks = 30,
+      maxVeinBlocks = 0,
+      reserve = 16,
+    },
+    progress = { leg = 1, offset = 0, layer = 0, strip = 0 },
+  }
+  local bus = {
+    outbox = {},
+    send = function() end,
+    station = { id = "s0", shaftPose = { x = 0, y = 20, z = 0, f = 0 } },
+  }
+  local result, err = miner.run(mission, bus)
+  _G.gps = savedGps
+  if result ~= "done" then print("walk miner error: " .. tostring(err)) end
+  eq("walk transit result", result, "done")
+  eq("walk transit ends on the shaft column", ("%d,%d"):format(t.x, t.z), "0,0")
+  eq("walk transit descends to the room", t.y, 20)
 end)
 
 test("miner resumes in the room without GPS after a reboot", function()

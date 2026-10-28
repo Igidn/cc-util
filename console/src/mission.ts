@@ -2,8 +2,43 @@ import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { store } from "./store.js";
 import { cachedLegs, planSummary, progressPercent, totalBlocks } from "./plan.js";
-import type { Mission, MissionSpec, Pose, Station, Turtle } from "./types.js";
+import type { Mission, MissionSpec, Pose, Sector, Station, Turtle } from "./types.js";
 import { isTimberSpec, isTimberProgress, isBranchMineSpec, isMiningProgress } from "../shared/api.js";
+
+/**
+ * A stable X-lane for each miner at a station. The station's sector is split
+ * into `MINER_LANES` slices so two miners never work the same blocks.
+ * Returns null when every lane is held by another miner.
+ */
+export function freeMinerLane(station: Station, turtle: Turtle): number | null {
+  const assigned = (station.minerLanes ??= {});
+  if (typeof assigned[turtle.id] === "number") return assigned[turtle.id];
+  const count = Math.max(1, Math.floor(config.minerLanes));
+  const used = new Set<number>();
+  for (const [id, lane] of Object.entries(assigned)) {
+    if (id === turtle.id) continue;
+    const other = store.data.turtles[id];
+    if (other && other.role === "miner" && other.stationId === station.id) used.add(lane);
+  }
+  for (let lane = 0; lane < count; lane += 1) if (!used.has(lane)) return lane;
+  return null;
+}
+
+/** Sector for one miner's lane, recording the lane on the station. */
+function laneSector(
+  station: Station,
+  turtle: Turtle,
+  half: number,
+  staging: number,
+): { sector: Sector; lane: number } {
+  const count = Math.max(1, Math.floor(config.minerLanes));
+  const lane = freeMinerLane(station, turtle) ?? 0;
+  (station.minerLanes ??= {})[turtle.id] = lane;
+  const width = Math.max(1, Math.ceil((half * 2 + 1) / count));
+  const x0 = -half + lane * width;
+  const x1 = lane >= count - 1 ? half : Math.min(half, x0 + width - 1);
+  return { sector: { x0, z0: -half - staging, x1, z1: half - staging }, lane };
+}
 
 /**
  * Where the miner docks in the station room. New stations report this directly;
@@ -57,17 +92,15 @@ export function makeMission(turtle: Turtle, station: Station): Mission {
     // first mining layer. Stations built before geometry reporting fall back to
     // the turtle's last known column and the anchor's Y.
     const dock = branchMineDock(station, turtle);
+    const lane = laneSector(station, turtle, half, staging);
     spec = {
       kind: "branchMine",
       base: { x: dock.x, y: dock.y, z: dock.z, f: dock.f ?? 0 },
       baseVersion: 2,
       staging,
-      sector: {
-        x0: -half,
-        z0: -half - staging,
-        x1: half,
-        z1: half - staging,
-      },
+      sector: lane.sector,
+      lane: lane.lane,
+      laneCount: Math.max(1, Math.floor(config.minerLanes)),
       startY: config.topWorldY - dock.y,
       endY: config.bottomWorldY - dock.y,
       layerStep: config.layerStep,

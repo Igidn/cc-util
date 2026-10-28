@@ -21,6 +21,13 @@ export function buildLegs(spec: MissionSpec): Leg[] {
     throw new Error("buildLegs only supports branchMine missions");
   }
   const half = spec.maxRadius;
+  const staging = spec.staging;
+  // Lanes split the sector along X: each miner walks its own X slice while
+  // both share the same Z range.
+  const x0 = spec.sector?.x0 ?? -half;
+  const x1 = spec.sector?.x1 ?? half;
+  const z0 = spec.sector?.z0 ?? -half - staging;
+  const z1 = spec.sector?.z1 ?? half - staging;
   const legs: Leg[] = [];
 
   const line = (dir: 0 | 1 | 2 | 3, length: number, layer: number, strip: number) => {
@@ -28,30 +35,30 @@ export function buildLegs(spec: MissionSpec): Leg[] {
   };
 
   // The dock is one block south of the shaft top; step into the shaft first.
-  line(0, spec.staging, 0, 0);
+  line(0, staging, 0, 0);
 
   if (spec.startY < 0) {
     legs.push({ kind: "down", dir: 0, length: -spec.startY, layer: 0, strip: 0 });
   }
 
-  // Get from the shaft centre to the -X, -Z corner, then serpentine.
-  line(3, half, 0, 0); // west
-  line(0, half, 0, 0); // north
+  // Get from the shaft centre to the west edge of the lane, then north to its
+  // first row, and serpentine from there.
+  line(x0 < 0 ? 3 : 1, Math.abs(x0), 0, 0);
+  line(0, -staging - z0, 0, 0); // north
 
-  const strips = Math.floor((2 * half) / spec.spacing) + 1;
+  const width = x1 - x0;
+  const strips = Math.floor((z1 - z0) / spec.spacing) + 1;
   let y = spec.startY;
   let layer = 0;
   let zDir: 1 | -1 = 1;
   let xDir: 1 | 3 = 1; // east, then flip
-  let z = -half;
 
   while (y >= spec.endY) {
     for (let strip = 0; strip < strips; strip++) {
-      line(xDir, 2 * half, layer, strip);
+      line(xDir, width, layer, strip);
       xDir = xDir === 1 ? 3 : 1;
       if (strip < strips - 1) {
         line(zDir === 1 ? 2 : 0, spec.spacing, layer, strip);
-        z += zDir * spec.spacing;
       }
     }
 
@@ -81,6 +88,10 @@ function specKey(spec: MissionSpec): string {
     spec.endY,
     spec.layerStep,
     spec.spacing,
+    spec.sector?.x0 ?? "",
+    spec.sector?.x1 ?? "",
+    spec.sector?.z0 ?? "",
+    spec.sector?.z1 ?? "",
   ].join(":");
 }
 

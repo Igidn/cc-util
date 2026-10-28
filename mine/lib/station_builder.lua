@@ -498,9 +498,52 @@ local function reportGeometry(tunnel, stationId, turtleId, shaftX, shaftZ, surfa
     util.log("station_builder: geometry report failed:", err or "no response")
     return false
   end
+  local code = response.getResponseCode()
+  local body = response.readAll()
   response.close()
+  if code ~= 200 then
+    util.log("station_builder: geometry rejected:", code, body)
+    return false
+  end
   util.log("station_builder: reported geometry for", stationId)
   return true
+end
+
+-- Register the two surface chests the station layout expects: fuel in front of
+-- the builder's start pose and the depot behind it. Future haulers use these
+-- positions to fetch lava and to drop off ores.
+local function registerSurfaceChests(tunnel, stationId, base)
+  local dx, dz = pose.vec(base.f)
+  local function register(id, kind, x, y, z, label)
+    local payload = textutils.serializeJSON({
+      id = id,
+      stationId = stationId,
+      kind = kind,
+      pose = { x = x, y = y, z = z, f = base.f },
+      label = label,
+    })
+    local response, err = http.post(tunnel .. "/api/chests", payload, {
+      ["Content-Type"] = "application/json",
+    })
+    if not response then
+      util.log("station_builder: failed to register", kind, "chest:", err or "no response")
+      return false
+    end
+    response.close()
+    util.log("station_builder: registered", kind, "chest at", x, y, z)
+    return true
+  end
+
+  local front = hal.inspect()
+  if front and front.name and front.name:find("chest") then
+    register(string.format("s%s-c-fuel", stationId:sub(2)), "fuel",
+      base.x + dx, base.y, base.z + dz, "Fuel")
+  end
+  local back = inspectDir("back")
+  if back and back.name and back.name:find("chest") then
+    register(string.format("s%s-c-depot", stationId:sub(2)), "depot",
+      base.x - dx, base.y, base.z - dz, "Depot")
+  end
 end
 
 local function transitionToHauler(tunnel, turtleId)
@@ -557,6 +600,16 @@ function M.run(id, bus)
   end
 
   local surfaceY = (base and base.y) or (bus.pose and bus.pose.y) or 0
+  -- A builder started inside an existing room reports the room itself as the
+  -- surface and digs a one-block shaft that miners cannot use. Refuse instead.
+  if surfaceY <= TARGET_Y + 1 then
+    util.log(("station_builder: started at Y%d, not at the surface; move it up and assign the role again"):format(surfaceY))
+    return nil, ("station builder must start above Y%d"):format(TARGET_Y + 1)
+  end
+
+  -- Remember the surface fuel/depot chests for the hauler before digging.
+  if base then registerSurfaceChests(tunnel, stationId, base) end
+
   util.log(("station_builder: surface at Y%d, digging shaft down to Y%d"):format(surfaceY, TARGET_Y))
 
   -- 4. Create nav instance from dock-zeroed base pose (real world coordinates)
@@ -607,11 +660,16 @@ function M.run(id, bus)
   for _ = 1, math.abs(dz) do nav.step(navInstance, "forward") end
 
   -- 8. Report the real world geometry so missions can base themselves on the
-  -- room instead of the synthetic station anchor.
-  reportGeometry(tunnel, stationId, turtleId, shaftX, shaftZ, surfaceY, floorY)
+  -- room instead of the synthetic station anchor. A rejected report means the
+  -- station would be unusable, so stay a builder and surface the error.
+  local reported = reportGeometry(tunnel, stationId, turtleId, shaftX, shaftZ, surfaceY, floorY)
 
   -- 9. Release shaft lock
   shaft.release(tunnel, stationId, turtleId)
+
+  if not reported then
+    return nil, "station geometry was rejected; check that the builder started on the surface"
+  end
 
   -- 10. Transition to hauler
   transitionToHauler(tunnel, turtleId)

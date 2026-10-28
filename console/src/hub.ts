@@ -3,7 +3,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { authenticate, publicTurtle } from "./registry.js";
-import { ensureMission, missionSummary } from "./mission.js";
+import { ensureMission, freeMinerLane, missionSummary } from "./mission.js";
 import { store } from "./store.js";
 import type {
   InventoryItem,
@@ -361,10 +361,22 @@ class Hub {
     return this.sendCommand(turtleId, "returnHome");
   }
 
-  start(turtleId: string): boolean {
+  start(turtleId: string): { ok: boolean; error?: string } {
     const turtle = store.data.turtles[turtleId];
     const station = turtle ? store.data.stations[turtle.stationId] : undefined;
-    if (!turtle || !station || (turtle.role !== "miner" && turtle.role !== "lumberjack")) return false;
+    if (!turtle || !station || (turtle.role !== "miner" && turtle.role !== "lumberjack")) {
+      return { ok: false, error: "only miners and lumberjacks take missions" };
+    }
+    // A miner can only work from a room whose geometry the builder reported.
+    if (turtle.role === "miner" && !station.dockPose) {
+      return { ok: false, error: "station has no reported room geometry; build the station first" };
+    }
+    if (turtle.role === "miner" && freeMinerLane(station, turtle) === null) {
+      return {
+        ok: false,
+        error: `all ${config.minerLanes} miner lanes at ${station.name} are in use`,
+      };
+    }
     const mission = ensureMission(turtle, station);
     mission.state = "active";
     turtle.missionId = mission.id;
@@ -372,7 +384,7 @@ class Hub {
     // The start is recorded server-side and re-offered on the next welcome, so
     // an offline turtle must not turn a successful start into an error.
     this.sendCommand(turtleId, "startMission", { mission: { id: mission.id, spec: mission.spec } });
-    return true;
+    return { ok: true };
   }
 
   ping(turtleId: string): boolean {

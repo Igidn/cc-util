@@ -175,6 +175,11 @@ function M.placeDown()
   return backend.placeDown()
 end
 
+function M.suck()
+  if not backend or not backend.suck then return false end
+  return backend.suck()
+end
+
 function M.suckUp()
   if not backend then return false end
   return backend.suckUp()
@@ -190,6 +195,10 @@ function M.refuel()
   return backend.refuel()
 end
 
+function M.isFuel(name)
+  return FUEL_ITEMS[name] == true
+end
+
 function M.findFuelSlot()
   for slot = 1, 16 do
     local item = M.itemDetail(slot)
@@ -198,12 +207,17 @@ function M.findFuelSlot()
   return nil
 end
 
-function M.refuelFromInventory()
+function M.refuelFromInventory(limit)
   local slot = M.findFuelSlot()
   if not slot then return false, "no fuel in inventory" end
   local previous = M.selectedSlot()
   if not M.select(slot) then return false, "select failed" end
-  local ok, err = M.refuel()
+  local ok, err
+  if limit and backend and backend.refuel then
+    ok, err = backend.refuel(limit)
+  else
+    ok, err = M.refuel()
+  end
   pcall(M.select, previous)
   if not ok then return false, err or "refuel failed" end
   return true

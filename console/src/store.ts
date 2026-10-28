@@ -42,6 +42,7 @@ class Store {
         if (station.shaftPose === undefined) station.shaftPose = null;
         if (station.roomPose === undefined) station.roomPose = null;
         if (station.dockPose === undefined) station.dockPose = null;
+        if (!station.minerLanes) station.minerLanes = {};
         if (station.built === undefined) station.built = false;
         if (typeof station.storageChestCount !== "number") station.storageChestCount = 32;
         if (typeof station.storageChestsFilled !== "number") station.storageChestsFilled = 0;

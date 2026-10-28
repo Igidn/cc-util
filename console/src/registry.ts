@@ -45,6 +45,7 @@ export function register(body: unknown):
     shaftPose: null,
     roomPose: null,
     dockPose: null,
+    minerLanes: {},
     built: false,
     storageChestCount: 32,
     storageChestsFilled: 0,

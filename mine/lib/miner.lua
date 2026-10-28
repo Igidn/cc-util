@@ -115,6 +115,31 @@ local function navigateTo(navInstance, targetX, targetY, targetZ)
   return true
 end
 
+-- Each miner parks on its own cell between trips so the shared dock stays
+-- free for the other miner. One miner per station needs no parking.
+local function parkingCell(spec)
+  local lane = tonumber(spec.lane) or 0
+  local lanes = tonumber(spec.laneCount) or 1
+  if lanes < 2 then return nil end
+  return spec.base.x, spec.base.y, spec.base.z + 2 + lane * 2
+end
+
+-- Walk across the room without digging. Retries so a turtle standing in the
+-- way only delays the move instead of failing the mission.
+local function walkInRoom(snap, x, y, z, attempts)
+  local lastErr
+  attempts = attempts or 1
+  for attempt = 1, attempts do
+    local trip = nav.new(hal, tape.new(), 0, pose.copy(snap.pose), false)
+    local ok, err = navigateTo(trip, x, y, z)
+    snap.pose = pose.copy(trip.pose)
+    if ok then return true end
+    lastErr = err
+    if attempt < attempts then os.sleep(1) end
+  end
+  return false, lastErr
+end
+
 -- Drop every inventory slot into the chest directly below the turtle.
 local function depositItemsDown()
   local dropped = 0
@@ -329,7 +354,7 @@ local function travelTo(trip, legs, progress, bus)
   return true, nil, shaftTapeLen
 end
 
-local function mine(trip, legs, progress, snap, mission, budget, bus)
+local function mine(trip, legs, progress, snap, mission, budget, bus, gate)
   local spec = mission.spec
   local mined = 0
   local sinceSave = 0
@@ -356,6 +381,7 @@ local function mine(trip, legs, progress, snap, mission, budget, bus)
     bus.progress = progress
     bus.pose = trip.pose
     bus.stats = snap.stats
+    if gate then gate.maybeRelease(progress) end
 
     local sok, serr = scanVeins(trip, spec, snap.stats, bus)
     if not sok then return nil, serr end
@@ -377,6 +403,73 @@ local function shaftColumn(spec)
   local dx, dz = pose.vec(0)
   local n = spec.staging or 1
   return spec.base.x + dx * n, spec.base.z + dz * n
+end
+
+-- The plan legs that belong to the shaft: the staging step into the column
+-- and the descent to the first mining level. `outLeg` is the first leg that
+-- leaves the shaft (one step of it is enough).
+local function shaftPlan(legs)
+  local staging = legs[1] and legs[1].length or 0
+  local down = 0
+  if legs[2] and legs[2].kind == "down" then down = legs[2].length end
+  local outLeg = staging > 0 and (2 + (down > 0 and 1 or 0)) or 1
+  return staging + down, outLeg
+end
+
+-- Shaft lock for one mining trip. The lock is held only while the miner is in
+-- the shaft column: it is released as soon as the miner steps into the sector
+-- and taken again at the shaft bottom on the way home. That keeps a second
+-- miner and the hauler moving while this one mines.
+local function newShaftGate(tunnel, stationId, id, legs)
+  local tapeLen, outLeg = shaftPlan(legs)
+  local gate = { held = false, tapeLen = tapeLen, outLeg = outLeg }
+
+  function gate.acquire()
+    if gate.held then return true end
+    if tunnel and not shaft.acquire(tunnel, stationId, id, "mining trip") then
+      return nil
+    end
+    gate.held = true
+    return true
+  end
+
+  function gate.release()
+    if not gate.held then return true end
+    gate.held = false
+    if tunnel then shaft.release(tunnel, stationId, id) end
+    return true
+  end
+
+  function gate.maybeRelease(progress)
+    if not gate.held then return true end
+    if progress.leg > gate.outLeg
+      or (progress.leg == gate.outLeg and (progress.offset or 0) >= 1) then
+      return gate.release()
+    end
+    return true
+  end
+
+  return gate
+end
+
+-- Retrace the trip. The shaft lock is taken when the tape reaches the shaft
+-- bottom, so the walk back through the sector does not block the station.
+local function retraceTrip(trip, gate, bus)
+  while true do
+    local len = tape.length(trip.tape)
+    if len == 0 then break end
+    if not gate.held and len <= gate.tapeLen + 1 then
+      if not gate.acquire() then return nil, "shaft lock unavailable for ascent" end
+      if bus then bus.state = "ascending" end
+    end
+    local ok, err = nav.retraceOne(trip)
+    if not ok then
+      if gate.held then gate.release() end
+      return nil, err
+    end
+  end
+  if gate.held then gate.release() end
+  return true
 end
 
 local function recover(snap, mission, bus, useGps)
@@ -406,6 +499,16 @@ local function recover(snap, mission, bus, useGps)
   return true
 end
 
+-- The world Y the miner must return to on ascent. The station's shaft top is
+-- authoritative, but a station built from the wrong level can report a shaft
+-- that is only a couple of blocks tall; in that case trust where the miner
+-- actually started its descent.
+local function stationSurfaceY(bus, dockY, fallbackY)
+  local reported = bus.station and bus.station.shaftPose and bus.station.shaftPose.y
+  if type(reported) == "number" and reported > dockY + 1 then return reported end
+  return fallbackY
+end
+
 -- Descend the station's main shaft from the surface to the room dock, then
 -- release the shaft lock. This is a one-time transit; mining trips start and
 -- end at the room, not at the surface.
@@ -426,14 +529,87 @@ local function transitToRoom(spec, mission, snap, bus, useGps, stationId, id, tu
   if p.x == dockX and p.y == dockY and p.z == dockZ then
     snap.pose = p
     snap.atRoom = true
-    if type(snap.surfaceY) ~= "number" and bus.station and bus.station.shaftPose then
-      snap.surfaceY = bus.station.shaftPose.y
+    if type(snap.surfaceY) ~= "number" then
+      snap.surfaceY = stationSurfaceY(bus, dockY, p.y)
     end
     return true
   end
 
   if p.y < dockY then
     return nil, ("miner is below the station room at Y%d; move it to the shaft top"):format(p.y)
+  end
+
+  -- Walk to the shaft column when the miner is standing on the open surface.
+  -- This is non-digging: a blocked path fails with a clear error instead of
+  -- carving through the landscape.
+  local shaftTopY = bus.station and bus.station.shaftPose and bus.station.shaftPose.y
+  if p.y == shaftTopY and (p.x ~= sx or p.z ~= sz) then
+    local walk = nav.new(hal, tape.new(), spec.reserve, p, useGps)
+    local function walkAxis(dx, dz)
+      if dx ~= 0 then
+        local ok, err = nav.face(walk, dx > 0 and 1 or 3)
+        if not ok then return nil, err end
+        for _ = 1, math.abs(dx) do
+          local sok, serr = nav.step(walk, "forward")
+          if not sok then return nil, serr end
+        end
+      end
+      if dz ~= 0 then
+        local ok, err = nav.face(walk, dz > 0 and 2 or 0)
+        if not ok then return nil, err end
+        for _ = 1, math.abs(dz) do
+          local sok, serr = nav.step(walk, "forward")
+          if not sok then return nil, serr end
+        end
+      end
+      return true
+    end
+    local ok, err = walkAxis(sx - p.x, sz - p.z)
+    if not ok then
+      nav.retraceAll(walk)
+      return nil, ("could not walk to the shaft top at x=%d z=%d: %s"):format(sx, sz, tostring(err))
+    end
+    p = pose.copy(walk.pose)
+    snap.pose = p
+  end
+
+  -- At the room's walking level but not on the dock: the room is open, so
+  -- walk across instead of demanding exact placement.
+  if p.y == dockY and (p.x ~= dockX or p.z ~= dockZ) then
+    local walk = nav.new(hal, tape.new(), spec.reserve, p, useGps)
+    local dx, dz = dockX - p.x, dockZ - p.z
+    local ok, err = true, nil
+    if dx ~= 0 then
+      ok, err = nav.face(walk, dx > 0 and 1 or 3)
+      if ok then
+        for _ = 1, math.abs(dx) do
+          ok, err = nav.step(walk, "forward")
+          if not ok then break end
+        end
+      end
+    end
+    if ok and dz ~= 0 then
+      ok, err = nav.face(walk, dz > 0 and 2 or 0)
+      if ok then
+        for _ = 1, math.abs(dz) do
+          ok, err = nav.step(walk, "forward")
+          if not ok then break end
+        end
+      end
+    end
+    if not ok then
+      nav.retraceAll(walk)
+      return nil, "could not walk to the room dock: " .. tostring(err)
+    end
+    snap.pose = pose.copy(walk.pose)
+    snap.atRoom = true
+    if type(snap.surfaceY) ~= "number" then
+      snap.surfaceY = stationSurfaceY(bus, dockY, walk.pose.y)
+    end
+    save(snap, mission, nil, false)
+    progressMsg(bus, mission, snap, nil, "idle")
+    util.log(("miner: walked to the room dock at x=%d y=%d z=%d"):format(walk.pose.x, walk.pose.y, walk.pose.z))
+    return true
   end
 
   if p.x ~= sx or p.z ~= sz then
@@ -452,7 +628,7 @@ local function transitToRoom(spec, mission, snap, bus, useGps, stationId, id, tu
     return nil, "shaft lock unavailable for descent"
   end
 
-  snap.surfaceY = p.y
+  snap.surfaceY = stationSurfaceY(bus, dockY, p.y)
   local trip = nav.new(hal, tape.new(), spec.reserve, p, useGps)
   snap.tripActive = true
   snap.pose = trip.pose
@@ -487,8 +663,19 @@ local function transitToRoom(spec, mission, snap, bus, useGps, stationId, id, tu
   end
 
   -- Step off the shaft column onto the dock (south, opposite the staging leg).
+  -- Another miner may be parked there between trips, so wait for the cell to
+  -- clear instead of failing the whole transit. The wait is bounded: holding
+  -- the shaft lock must not block an ascent for long.
   local fok, ferr = nav.face(trip, 2)
   if fok then fok, ferr = nav.step(trip, "forward") end
+  local waited = 0
+  while not fok and waited < 20 and not tostring(ferr):find("fuel", 1, true) do
+    local blocker = hal.inspect()
+    util.log("miner: room dock blocked by", blocker and blocker.name or "unknown", "- waiting")
+    os.sleep(1)
+    waited = waited + 1
+    fok, ferr = nav.step(trip, "forward")
+  end
   if not fok then
     nav.retraceAll(trip)
     if tunnel then shaft.release(tunnel, stationId, id) end
@@ -715,16 +902,14 @@ function M.run(mission, bus)
   local roomBased = spec.base.x ~= 0 or spec.base.y ~= 0 or spec.base.z ~= 0
   if roomBased then
     -- After a reboot in the room there is no GPS underground, so resume from
-    -- the saved room pose instead of trying to fly down the shaft again.
-    local dx = snap.pose.x - spec.base.x
-    local dz = snap.pose.z - spec.base.z
+    -- the saved room pose instead of trying to fly down the shaft again. The
+    -- miner may be parked on its own cell: keep the spec base on the dock and
+    -- let the trip loop walk back to it.
     local resumedInRoom = snap.atRoom
       and not snap.tripActive
       and snap.pose.y == spec.base.y
-      and dx * dx + dz * dz <= 4
 
     if resumedInRoom then
-      spec.base = pose.copy(snap.pose)
       util.log(("miner: resuming in the station room at x=%d y=%d z=%d"):format(
         snap.pose.x, snap.pose.y, snap.pose.z
       ))
@@ -742,6 +927,8 @@ function M.run(mission, bus)
 
   local legs = plan.build(spec)
   if #legs == 0 then return nil, "empty plan" end
+
+  local gate = newShaftGate(tunnel, stationId, id, legs)
 
   if bus then
     bus.pose = snap.pose
@@ -777,6 +964,15 @@ function M.run(mission, bus)
       return "paused"
     end
 
+    -- Trips start at the shared room dock. Walk back to it first, waiting out
+    -- the other miner if it is standing there.
+    if snap.atRoom then
+      local ok, derr = walkInRoom(snap, spec.base.x, spec.base.y, spec.base.z, 120)
+      if not ok then
+        return nil, "could not reach the room dock: " .. tostring(derr)
+      end
+    end
+
     -- Trips start and end at the room dock. Keep enough fuel to walk across
     -- the room and still climb the shaft on the way out, so the miner never
     -- strands itself underground.
@@ -791,9 +987,20 @@ function M.run(mission, bus)
     snap.tape = trip.tape
     save(snap, mission, trip, true)
 
+    if snap.atRoom then
+      -- Every trip replays the route from the dock through the shaft to the
+      -- frontier, so the shaft must be free before the first step.
+      if not gate.acquire() then
+        snap.tripActive = false
+        save(snap, mission, nil, false)
+        return nil, "shaft lock unavailable for the trip"
+      end
+    end
+
     local tok, terr = travelTo(trip, legs, snap.progress, bus)
+    if gate.held then gate.maybeRelease(snap.progress) end
     if not tok then
-      local homeOK, homeErr = nav.retraceAll(trip)
+      local homeOK, homeErr = retraceTrip(trip, gate, bus)
       snap.tripActive = false
       snap.tape = tape.new()
       snap.pose = pose.copy(trip.pose)
@@ -816,11 +1023,11 @@ function M.run(mission, bus)
       return nil, "travel failed: " .. tostring(terr)
     end
 
-    local mined, merr = mine(trip, legs, snap.progress, snap, mission, spec.maxTripBlocks, bus)
+    local mined, merr = mine(trip, legs, snap.progress, snap, mission, spec.maxTripBlocks, bus, gate)
 
     -- Pop the whole trip tape: back to the room dock, including the staging
     -- and descent legs.
-    local retOK, retErr = nav.retraceAll(trip)
+    local retOK, retErr = retraceTrip(trip, gate, bus)
     if retOK then
       local dropped = depositIntoRoom(trip, chests)
       if dropped > 0 then
@@ -841,8 +1048,20 @@ function M.run(mission, bus)
     snap.tripActive = false
     snap.pose = pose.copy(trip.pose)
     snap.stats.trips = snap.stats.trips + 1
+
+    -- Clear the dock so the other miner can start its trip.
+    if retOK and snap.atRoom then
+      local px, py, pz = parkingCell(spec)
+      if px then
+        local pok, perr = walkInRoom(snap, px, py, pz, 3)
+        if not pok then
+          util.log("miner: could not reach the parking spot:", perr or "unknown")
+        end
+      end
+    end
+
     save(snap, mission, nil, false)
-    progressMsg(bus, mission, snap, trip, "idle")
+    progressMsg(bus, mission, snap, nil, "idle")
 
     if plan.normalize(legs, snap.progress) then
       goHome()

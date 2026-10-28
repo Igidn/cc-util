@@ -110,6 +110,18 @@ function M.run(identity, bus)
           end
           util.log("supervisor: mission", status, err or "")
 
+          -- The mission reported its final result, so drop it from the local
+          -- checkpoint. Crash recovery must only resume missions that never
+          -- reached an end; otherwise a reboot revives a mission the console
+          -- has already closed.
+          local snap = state.load(hal.fuel)
+          if snap and snap.mission and snap.mission.id == mission.id then
+            snap.mission = nil
+            snap.tripActive = false
+            snap.tape = {}
+            state.save(snap)
+          end
+
           bus.running = nil
           if bus.mission == mission then
             bus.mission = nil
