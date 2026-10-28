@@ -21,6 +21,7 @@ import {
   roleTone,
   shortId,
   stateMeta,
+  stationLabel,
   turtleName,
 } from "@/lib/format";
 import { eventSummary } from "@/lib/event-text";
@@ -97,6 +98,10 @@ export function TurtleSheet({
   const hold = inventoryStats(turtle.inventory);
   const events = (snapshot.events ?? []).filter((event) => event.turtleId === turtle.id).slice(0, 7);
   const pingPending = isPending(turtle.id, "ping");
+  const stations = [...(snapshot.stations ?? [])].sort((a, b) => a.index - b.index);
+  const stationLocked = Boolean(
+    latest && (latest.state === "active" || latest.state === "offered" || latest.state === "paused"),
+  );
 
   const saveLabel = async (event: FormEvent) => {
     event.preventDefault();
@@ -386,6 +391,38 @@ export function TurtleSheet({
                   </Select>
                   <FieldDescription>
                     Roles drive readiness counts and future work routing.
+                  </FieldDescription>
+                </Field>
+
+                <Field>
+                  <FieldLabel
+                    htmlFor="turtle-station"
+                    className="mono text-[10px] uppercase tracking-[0.12em]"
+                  >
+                    station
+                  </FieldLabel>
+                  <Select
+                    value={turtle.stationId}
+                    onValueChange={(value) =>
+                      void updateTurtle(turtle.id, { stationId: value })
+                    }
+                    disabled={stationLocked}
+                  >
+                    <SelectTrigger id="turtle-station" className="w-full">
+                      <SelectValue placeholder="choose a station" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {stations.map((entry) => (
+                        <SelectItem key={entry.id} value={entry.id}>
+                          {stationLabel(entry.index, entry.id)} · {entry.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    {stationLocked
+                      ? "Stop the active mission before moving this turtle to another station."
+                      : "Miners and haulers use this station's anchor, shaft, and chests."}
                   </FieldDescription>
                 </Field>
               </FieldGroup>

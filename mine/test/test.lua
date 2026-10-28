@@ -628,6 +628,157 @@ test("abort before a trip halts and persists", function()
   eq("halt mission", loaded.mission.id, "halt-test-1")
 end)
 
+test("miner descends the station shaft to the room and mines from there", function()
+  resetStore(nil, nil)
+  snapshots = {}
+  files = {}
+  state.resetJournal()
+
+  local t = newTurtle()
+  -- Surface above the shaft column (0,0); room dock at (0,10,1).
+  t.x, t.y, t.z, t.f = 0, 20, 0, 0
+  t.fuel = 1000
+  mock.turtle = t
+  hal.setBackend(mock)
+
+  for y = 10, 20 do t.air[key(0, y, 0)] = true end
+  t.air[key(0, 10, 1)] = true
+
+  local savedGps = _G.gps
+  -- Report the live mock position, the way a real GPS would, so the periodic
+  -- pose resync does not drag the turtle back to its starting Y.
+  _G.gps = { locate = function() return mock.turtle.x, mock.turtle.y, mock.turtle.z end }
+
+  local mission = {
+    id = "transit-test-1",
+    spec = {
+      kind = "branchMine",
+      base = { x = 0, y = 10, z = 1, f = 0 },
+      staging = 1,
+      sector = { x0 = -4, z0 = -5, x1 = 4, z1 = 1 },
+      startY = -4,
+      endY = -4,
+      layerStep = 2,
+      spacing = 3,
+      maxRadius = 4,
+      maxTripBlocks = 30,
+      maxVeinBlocks = 0,
+      reserve = 16,
+    },
+    progress = { leg = 1, offset = 0, layer = 0, strip = 0 },
+  }
+  local bus = { outbox = {}, send = function() end }
+  local result, err = miner.run(mission, bus)
+  _G.gps = savedGps
+  if result ~= "done" then print("transit miner error: " .. tostring(err)) end
+  eq("transit result", result, "done")
+  eq("transit ends at the surface", t.y, 20)
+  eq("transit ends on the shaft column", ("%d,%d"):format(t.x, t.z), "0,0")
+  local loaded = state.load(function() return t.fuel end)
+  eq("transit atRoom cleared", loaded.atRoom, false)
+  eq("transit surface Y recorded", loaded.surfaceY, 20)
+end)
+
+test("miner resumes in the room without GPS after a reboot", function()
+  resetStore(nil, nil)
+  snapshots = {}
+  files = {}
+  state.resetJournal()
+
+  local t = newTurtle()
+  -- Already docked in the room, with the shaft above at (0,10..20,0).
+  t.x, t.y, t.z, t.f = 0, 10, 1, 0
+  t.fuel = 1000
+  mock.turtle = t
+  hal.setBackend(mock)
+
+  for y = 10, 20 do t.air[key(0, y, 0)] = true end
+  t.air[key(0, 10, 1)] = true
+
+  local savedGps = _G.gps
+  _G.gps = nil -- underground: GPS is not available
+
+  local spec = {
+    kind = "branchMine",
+    base = { x = 0, y = 10, z = 1, f = 0 },
+    staging = 1,
+    sector = { x0 = -4, z0 = -5, x1 = 4, z1 = 1 },
+    startY = -4,
+    endY = -4,
+    layerStep = 2,
+    spacing = 3,
+    maxRadius = 4,
+    maxTripBlocks = 30,
+    maxVeinBlocks = 0,
+    reserve = 16,
+  }
+  local mission = {
+    id = "resume-room-1",
+    spec = spec,
+    progress = { leg = 1, offset = 0, layer = 0, strip = 0 },
+  }
+  snapshots[state.STATE] = {
+    pose = { x = 0, y = 10, z = 1, f = 0 },
+    tape = {},
+    seq = 0,
+    progress = { leg = 1, offset = 0, layer = 0, strip = 0 },
+    stats = { blocks = 0, ores = 0, trips = 0 },
+    tripActive = false,
+    atRoom = true,
+    surfaceY = 20,
+    mission = { id = mission.id, spec = spec },
+  }
+
+  local bus = { outbox = {}, send = function() end }
+  local result, err = miner.run(mission, bus)
+  _G.gps = savedGps
+  if result ~= "done" then print("resume miner error: " .. tostring(err)) end
+  eq("resume result", result, "done")
+  eq("resume ends at the surface", t.y, 20)
+end)
+
+test("legacy mission spec waits for the console reissue", function()
+  resetStore(nil, nil)
+  snapshots = {}
+  files = {}
+  state.resetJournal()
+
+  local t = newTurtle()
+  mock.turtle = t
+  hal.setBackend(mock)
+
+  local function spec(version)
+    return {
+      kind = "branchMine",
+      base = { x = 0, y = 10, z = 1, f = 0 },
+      baseVersion = version,
+      staging = 1,
+      sector = { x0 = -4, z0 = -5, x1 = 4, z1 = 1 },
+      startY = -4,
+      endY = -4,
+      layerStep = 2,
+      spacing = 3,
+      maxRadius = 4,
+      maxTripBlocks = 10,
+      maxVeinBlocks = 0,
+      reserve = 16,
+    }
+  end
+
+  local legacy = { id = "legacy-1", spec = spec(nil) }
+  local replacement = { id = "legacy-1", spec = spec(2) }
+  local bus = {
+    serverUrl = "http://console",
+    mission = replacement,
+    outbox = {},
+    send = function() end,
+  }
+
+  local result = miner.run(legacy, bus)
+  eq("legacy waits for a reissue", result, "reload")
+  eq("legacy did not move", t.y, 0)
+end)
+
 -- ---------------------------------------------------------------------------
 print(("%d tests, %d failures"):format(tests, failures))
 if failures > 0 then os.exit(1) end

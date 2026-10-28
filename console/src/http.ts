@@ -82,6 +82,19 @@ function authorized(req: IncomingMessage, url: URL): boolean {
   return bearer === config.adminToken || url.searchParams.get("token") === config.adminToken;
 }
 
+/** Parse a reported world pose, rejecting missing or non-finite coordinates. */
+function parsePose(value: unknown): { x: number; y: number; z: number; f: 0 | 1 | 2 | 3 } | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const x = Number(raw.x);
+  const y = Number(raw.y);
+  const z = Number(raw.z);
+  const f = Number(raw.f ?? 0);
+  if (![x, y, z, f].every(Number.isFinite)) return null;
+  if (![0, 1, 2, 3].includes(f)) return null;
+  return { x, y, z, f: f as 0 | 1 | 2 | 3 };
+}
+
 function serveFile(res: ServerResponse, file: string, immutable = false): boolean {
   try {
     const stat = fs.statSync(file);
@@ -261,7 +274,7 @@ export function createServer(): Server {
         return;
       }
 
-      const edit = url.pathname.match(/^\/api\/turtles\/([^/]+)\/(label|role)$/);
+      const edit = url.pathname.match(/^\/api\/turtles\/([^/]+)\/(label|role|station)$/);
       if (req.method === "POST" && edit) {
         if (!authorized(req, url)) {
           json(res, 401, { ok: false, error: "unauthorized" });
@@ -272,8 +285,20 @@ export function createServer(): Server {
         const ok =
           edit[2] === "label"
             ? hub.setLabel(id, String(body.label ?? ""))
-            : hub.setRole(id, String(body.role ?? ""));
-        json(res, ok ? 200 : 400, { ok });
+            : edit[2] === "role"
+              ? hub.setRole(id, String(body.role ?? ""))
+              : hub.setStation(id, String(body.stationId ?? ""));
+        json(res, ok ? 200 : 400, {
+          ok,
+          ...(ok
+            ? {}
+            : {
+                error:
+                  edit[2] === "station"
+                    ? "station change rejected: unknown station or an active mission"
+                    : "update rejected",
+              }),
+        });
         return;
       }
 
@@ -314,8 +339,17 @@ export function createServer(): Server {
         }
         const id = decodeURIComponent(assignRole[1]);
         const body = (await readBody(req)) as Record<string, unknown>;
-        const ok = hub.assignRole(id, String(body.role ?? ""));
-        json(res, ok ? 200 : 400, { ok });
+        const stationId =
+          typeof body.stationId === "string" && body.stationId ? body.stationId : undefined;
+        if (stationId && !store.data.stations[stationId]) {
+          json(res, 400, { ok: false, error: "unknown station" });
+          return;
+        }
+        const ok = hub.assignRole(id, String(body.role ?? ""), stationId);
+        json(res, ok ? 200 : 409, {
+          ok,
+          ...(ok ? {} : { error: "role or station change rejected" }),
+        });
         return;
       }
 
@@ -327,16 +361,18 @@ export function createServer(): Server {
           json(res, 404, { ok: false, error: "unknown turtle" });
           return;
         }
-        json(res, 200, { ok: true, role: turtle.role });
+        json(res, 200, {
+          ok: true,
+          role: turtle.role,
+          station: store.data.stations[turtle.stationId] ?? null,
+        });
         return;
       }
 
       // ---- Chests ----
+      // Turtles read chest positions over HTTP (they have no admin token), so
+      // these GETs stay open like the shaft status and station geometry routes.
       if (req.method === "GET" && url.pathname === "/api/chests") {
-        if (!authorized(req, url)) {
-          json(res, 401, { ok: false, error: "unauthorized" });
-          return;
-        }
         const stationId = url.searchParams.get("stationId") ?? undefined;
         json(res, 200, { ok: true, chests: listChests(stationId) });
         return;
@@ -344,10 +380,6 @@ export function createServer(): Server {
 
       const chestStation = url.pathname.match(/^\/api\/chests\/([^/]+)$/);
       if (req.method === "GET" && chestStation) {
-        if (!authorized(req, url)) {
-          json(res, 401, { ok: false, error: "unauthorized" });
-          return;
-        }
         const stationId = decodeURIComponent(chestStation[1]);
         json(res, 200, { ok: true, chests: listChests(stationId) });
         return;
@@ -521,6 +553,34 @@ export function createServer(): Server {
         store.event(turtleId || "system", "gps_alert", { stationId });
         store.save();
         json(res, 200, { ok: true, alerted: true });
+        return;
+      }
+
+      const stationGeometry = url.pathname.match(/^\/api\/stations\/([^/]+)\/geometry$/);
+      if (req.method === "POST" && stationGeometry) {
+        const stationId = decodeURIComponent(stationGeometry[1]);
+        const station = store.data.stations[stationId];
+        if (!station) {
+          json(res, 404, { ok: false, error: "unknown station" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const shaftPose = parsePose(body.shaftPose);
+        const roomPose = parsePose(body.roomPose);
+        const dockPose = parsePose(body.dockPose);
+        if (!shaftPose || !roomPose || !dockPose) {
+          json(res, 400, { ok: false, error: "invalid station geometry" });
+          return;
+        }
+        station.shaftPose = shaftPose;
+        station.roomPose = roomPose;
+        station.dockPose = dockPose;
+        station.built = true;
+        // The anchor is the room floor; roomPose is the walking level above it.
+        station.anchor = { x: roomPose.x, y: roomPose.y - 1, z: roomPose.z };
+        store.event("system", "station_geometry", { stationId, shaftPose, roomPose, dockPose });
+        store.save();
+        json(res, 200, { ok: true, stationId, built: true });
         return;
       }
 

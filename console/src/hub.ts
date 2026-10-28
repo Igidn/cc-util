@@ -19,6 +19,26 @@ import type {
 
 type Conn = { ws: WebSocket; turtle: Turtle; alive: boolean };
 
+/**
+ * Drop a station that no longer has any owner. Stations are created per
+ * registration, so moving a turtle to an existing station would otherwise
+ * leave a phantom "S01" behind. Never touch a station with a build, chests,
+ * ore data, or shaft activity.
+ */
+function pruneUnusedStation(stationId: string): void {
+  const station = store.data.stations[stationId];
+  if (!station || station.built) return;
+  if (Object.values(store.data.turtles).some((turtle) => turtle.stationId === stationId)) return;
+  if (Object.values(store.data.chests).some((chest) => chest.stationId === stationId)) return;
+  if (Object.keys(store.data.maps[stationId]?.ores ?? {}).length > 0) return;
+  const lock = store.data.shaftLocks[stationId];
+  if (lock && (lock.holderTurtleId || lock.queue.length > 0)) return;
+  delete store.data.stations[stationId];
+  delete store.data.shaftLocks[stationId];
+  delete store.data.maps[stationId];
+  store.event("system", "station_removed", { stationId });
+}
+
 type Pending = {
   turtleId: string;
   message: string;
@@ -349,7 +369,10 @@ class Hub {
     mission.state = "active";
     turtle.missionId = mission.id;
     store.save();
-    return this.sendCommand(turtleId, "startMission", { mission: { id: mission.id, spec: mission.spec } });
+    // The start is recorded server-side and re-offered on the next welcome, so
+    // an offline turtle must not turn a successful start into an error.
+    this.sendCommand(turtleId, "startMission", { mission: { id: mission.id, spec: mission.spec } });
+    return true;
   }
 
   ping(turtleId: string): boolean {
@@ -377,15 +400,45 @@ class Hub {
     return true;
   }
 
-  assignRole(turtleId: string, role: string): boolean {
+  setStation(turtleId: string, stationId: string): boolean {
+    const turtle = store.data.turtles[turtleId];
+    const station = store.data.stations[stationId];
+    if (!turtle || !station) return false;
+    if (turtle.stationId === stationId) return true;
+
+    // A mission spec is anchored to the station it was created for. Moving the
+    // turtle mid-run would mix two shafts and chest sets.
+    const current = turtle.missionId ? store.data.missions[turtle.missionId] : undefined;
+    if (current && (current.state === "active" || current.state === "offered" || current.state === "paused")) {
+      return false;
+    }
+
+    const previous = turtle.stationId;
+    turtle.stationId = stationId;
+    store.event(turtle.id, "station_changed", { from: previous, to: stationId });
+    if (previous) pruneUnusedStation(previous);
+    store.save();
+    this.sendCommand(turtleId, "assignStation", { station });
+    return true;
+  }
+
+  assignRole(turtleId: string, role: string, stationId?: string): boolean {
     const turtle = store.data.turtles[turtleId];
     if (!turtle) return false;
     if (!["miner", "lumberjack", "hauler", "unassigned", "station_builder"].includes(role)) return false;
+    if (stationId !== undefined && !this.setStation(turtleId, stationId)) return false;
+    if (!store.data.stations[turtle.stationId]) return false;
+
     turtle.role = role as TurtleRole;
-    store.event(turtle.id, "role_changed", { role });
+    store.event(turtle.id, "role_changed", { role, stationId: turtle.stationId });
     store.save();
-    // Notify the turtle over the WebSocket so it can switch runtimes.
-    return this.sendCommand(turtleId, "assignRole", { role });
+    // The installer polls role-status over HTTP, so a missing WebSocket must
+    // not turn a successful assignment into an error.
+    this.sendCommand(turtleId, "assignRole", {
+      role,
+      station: store.data.stations[turtle.stationId],
+    });
+    return true;
   }
 
   private sendRaw(ws: WebSocket, message: string): void {

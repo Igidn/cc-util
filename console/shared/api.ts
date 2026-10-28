@@ -8,6 +8,8 @@ export type MissionSpec =
   | {
       kind: "branchMine";
       base: Pose;
+      /** 2 = base is the station room dock, not the surface. */
+      baseVersion?: number;
       staging: number;
       sector: Sector;
       startY: number;
@@ -64,8 +66,12 @@ export type Station = {
   anchor: Vec3;
   createdAt: number;
   name: string;
+  /** Surface entry of the shaft, reported by the station builder. */
   shaftPose: Pose | null;
+  /** Shaft column at the room's walking level (top of the room). */
   roomPose: Pose | null;
+  /** Miner dock inside the room: one block south of the shaft column. */
+  dockPose: Pose | null;
   built: boolean;
   storageChestCount: number;
   storageChestsFilled: number;

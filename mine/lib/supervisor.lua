@@ -82,45 +82,54 @@ function M.run(identity, bus)
         util.log("supervisor: mission", mission.id)
         local result, err = miner.run(mission, bus)
 
-        local status = "failed"
-        if result == "done" then
-          status = "done"
-        elseif result == "paused" then
-          status = "paused"
-        end
-
-        if bus.send then
-          bus.send({
-            type = "result",
-            id = commandId,
-            missionId = mission.id,
-            status = status,
-            error = err,
-            stats = bus.stats,
-            progress = bus.progress,
-          })
-        end
-        util.log("supervisor: mission", status, err or "")
-
-        bus.running = nil
-        if bus.mission == mission then
-          bus.mission = nil
-          bus.commandId = nil
-          bus.abort = false
-          bus.returnHome = false
-          if status == "paused" then
-            bus.blocked = true
-            bus.state = "paused"
-          elseif status == "done" then
-            bus.blocked = false
-            bus.state = "idle"
-          else
-            bus.blocked = true
-            bus.state = "halted"
-          end
-        else
+        if result == "reload" then
+          -- The link replaced the mission with a newer spec. Do not report a
+          -- result for the superseded spec; loop and run the replacement.
+          util.log("supervisor: mission spec replaced; restarting")
+          bus.running = nil
           bus.blocked = false
           bus.state = "queued"
+        else
+          local status = "failed"
+          if result == "done" then
+            status = "done"
+          elseif result == "paused" then
+            status = "paused"
+          end
+
+          if bus.send then
+            bus.send({
+              type = "result",
+              id = commandId,
+              missionId = mission.id,
+              status = status,
+              error = err,
+              stats = bus.stats,
+              progress = bus.progress,
+            })
+          end
+          util.log("supervisor: mission", status, err or "")
+
+          bus.running = nil
+          if bus.mission == mission then
+            bus.mission = nil
+            bus.commandId = nil
+            bus.abort = false
+            bus.returnHome = false
+            if status == "paused" then
+              bus.blocked = true
+              bus.state = "paused"
+            elseif status == "done" then
+              bus.blocked = false
+              bus.state = "idle"
+            else
+              bus.blocked = true
+              bus.state = "halted"
+            end
+          else
+            bus.blocked = false
+            bus.state = "queued"
+          end
         end
       else
         os.sleep(0.25)

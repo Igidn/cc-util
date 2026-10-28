@@ -231,6 +231,8 @@ function M.save(snap)
     seq = seq,
     paused = snap.paused and true or false,
     halted = snap.halted and true or false,
+    atRoom = snap.atRoom and true or false,
+    surfaceY = snap.surfaceY,
     updatedAt = util.now(),
   }
   if type(snap.tape) == "table" and snap.tape.ops then

@@ -17,7 +17,7 @@ const TOKEN_KEY = "ccutil.console.token";
 export type ConsoleStatus = "booting" | "live" | "offline" | "unauthorized";
 export type CommandOp = "start" | "abort" | "return" | "ping";
 
-type UpdateTurtle = { label?: string; role?: TurtleRole };
+type UpdateTurtle = { label?: string; role?: TurtleRole; stationId?: string };
 
 type ConsoleContextValue = {
   snapshot: Snapshot | null;
@@ -195,8 +195,14 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
 
   const updateTurtle = useCallback(
     async (turtleId: string, patch: UpdateTurtle) => {
-      const field = patch.role !== undefined ? "role" : "label";
-      const body = patch.role !== undefined ? { role: patch.role } : { label: patch.label ?? "" };
+      const field =
+        patch.role !== undefined ? "role" : patch.stationId !== undefined ? "station" : "label";
+      const body =
+        field === "role"
+          ? { role: patch.role }
+          : field === "station"
+            ? { stationId: patch.stationId }
+            : { label: patch.label ?? "" };
       try {
         const response = await apiFetch(`/api/turtles/${encodeURIComponent(turtleId)}/${field}`, {
           method: "POST",
@@ -209,7 +215,13 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
         if (!response.ok || !payload.ok) {
           throw new Error(payload.error ?? `request failed (${response.status})`);
         }
-        toast.success(field === "role" ? "Role updated" : "Call sign updated");
+        toast.success(
+          field === "role"
+            ? "Role updated"
+            : field === "station"
+              ? "Station updated"
+              : "Call sign updated",
+        );
         return true;
       } catch (error) {
         toast.error("Update failed", { description: (error as Error).message });

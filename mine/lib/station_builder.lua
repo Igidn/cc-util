@@ -484,6 +484,25 @@ end
 -- Transition to hauler
 ----------------------------------------------------------------------
 
+local function reportGeometry(tunnel, stationId, turtleId, shaftX, shaftZ, surfaceY, floorY)
+  local payload = textutils.serializeJSON({
+    turtleId = turtleId,
+    shaftPose = { x = shaftX, y = surfaceY, z = shaftZ, f = 0 },
+    roomPose = { x = shaftX, y = floorY + 1, z = shaftZ, f = 0 },
+    dockPose = { x = shaftX, y = floorY + 1, z = shaftZ + 1, f = 0 },
+  })
+  local response, err = http.post(tunnel .. "/api/stations/" .. stationId .. "/geometry", payload, {
+    ["Content-Type"] = "application/json",
+  })
+  if not response then
+    util.log("station_builder: geometry report failed:", err or "no response")
+    return false
+  end
+  response.close()
+  util.log("station_builder: reported geometry for", stationId)
+  return true
+end
+
 local function transitionToHauler(tunnel, turtleId)
   local payload = textutils.serializeJSON({ role = "hauler" })
   local response, err = http.post(tunnel .. "/api/turtles/" .. turtleId .. "/assign-role", payload, {
@@ -587,10 +606,14 @@ function M.run(id, bus)
   if dz > 0 then nav.face(navInstance, 2) elseif dz < 0 then nav.face(navInstance, 0) end
   for _ = 1, math.abs(dz) do nav.step(navInstance, "forward") end
 
-  -- 8. Release shaft lock
+  -- 8. Report the real world geometry so missions can base themselves on the
+  -- room instead of the synthetic station anchor.
+  reportGeometry(tunnel, stationId, turtleId, shaftX, shaftZ, surfaceY, floorY)
+
+  -- 9. Release shaft lock
   shaft.release(tunnel, stationId, turtleId)
 
-  -- 9. Transition to hauler
+  -- 10. Transition to hauler
   transitionToHauler(tunnel, turtleId)
 
   return "transition_to_hauler"

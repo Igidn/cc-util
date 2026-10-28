@@ -95,8 +95,9 @@ end
 --- Check if GPS is available (modem + satellites in range).
 -- @return true if GPS works, false otherwise
 function M.available(timeout)
-  local _, err = M.locate(timeout or 1)
-  return err == nil
+  -- locate returns x, y, z on success, so test the first value, not the second.
+  local x = M.locate(timeout or 1)
+  return x ~= nil
 end
 
 return M

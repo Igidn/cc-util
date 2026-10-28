@@ -41,6 +41,7 @@ class Store {
         if (typeof station.name !== "string") station.name = `Station ${station.index}`;
         if (station.shaftPose === undefined) station.shaftPose = null;
         if (station.roomPose === undefined) station.roomPose = null;
+        if (station.dockPose === undefined) station.dockPose = null;
         if (station.built === undefined) station.built = false;
         if (typeof station.storageChestCount !== "number") station.storageChestCount = 32;
         if (typeof station.storageChestsFilled !== "number") station.storageChestsFilled = 0;

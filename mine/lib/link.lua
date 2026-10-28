@@ -57,9 +57,16 @@ function M.run(identity, bus)
     elseif msg.type == "command" then
       local op = msg.op
       if op == "startMission" then
-        if bus.mission and msg.mission and bus.mission.id == msg.mission.id then
+        local sameMission = bus.mission and msg.mission and bus.mission.id == msg.mission.id
+        local sameSpec = sameMission
+          and bus.mission.spec
+          and msg.mission.spec
+          and util.jsonEncode(bus.mission.spec) == util.jsonEncode(msg.mission.spec)
+        if sameMission and sameSpec then
           send({ type = "ack", id = msg.id, status = "already-running" })
         else
+          -- A resend with a changed spec (e.g. a server-side migration) must
+          -- replace the running mission, not be ignored as a duplicate.
           bus.mission = msg.mission
           bus.commandId = msg.id
           bus.abort = false
@@ -80,7 +87,11 @@ function M.run(identity, bus)
           bus.role = msg.role
           util.log("link: role assigned", msg.role)
         end
+        if msg.station then bus.station = msg.station end
         send({ type = "ack", id = msg.id, status = "role-assigned" })
+      elseif op == "assignStation" then
+        if msg.station then bus.station = msg.station end
+        send({ type = "ack", id = msg.id, status = "station-assigned" })
       else
         send({ type = "ack", id = msg.id, status = "unknown-op" })
       end

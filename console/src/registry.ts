@@ -44,6 +44,7 @@ export function register(body: unknown):
     name: `Station ${index + 1}`,
     shaftPose: null,
     roomPose: null,
+    dockPose: null,
     built: false,
     storageChestCount: 32,
     storageChestsFilled: 0,

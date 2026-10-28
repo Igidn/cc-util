@@ -180,6 +180,11 @@ function M.suckUp()
   return backend.suckUp()
 end
 
+function M.suckDown()
+  if not backend or not backend.suckDown then return false end
+  return backend.suckDown()
+end
+
 function M.refuel()
   if not backend then return false end
   return backend.refuel()

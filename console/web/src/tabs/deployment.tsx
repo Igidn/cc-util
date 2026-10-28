@@ -75,19 +75,22 @@ export function DeploymentTab() {
   const pendingRequests = requests.filter((r) => r.status === "pending");
   const assignedRequests = requests.filter((r) => r.status === "assigned");
 
-  const assignRole = async (turtleId: string, role: string) => {
+  const assignRole = async (turtleId: string, role: string, stationId: string) => {
     setAssigning((prev) => new Set(prev).add(turtleId));
     try {
       const response = await apiFetch(
         `/api/turtles/${encodeURIComponent(turtleId)}/assign-role`,
-        { method: "POST", body: JSON.stringify({ role }) },
+        { method: "POST", body: JSON.stringify({ role, stationId: stationId || undefined }) },
       );
       const payload = (await response.json().catch(() => ({ ok: false }))) as {
         ok?: boolean;
         error?: string;
       };
       if (response.ok && payload.ok) {
-        toast.success("Role assigned");
+        const station = stations.find((entry) => entry.id === stationId);
+        toast.success("Role assigned", {
+          description: station ? stationLabel(station.index, station.id) : undefined,
+        });
         void refresh();
       } else {
         toast.error(payload.error ?? "Failed to assign role");
@@ -176,7 +179,7 @@ export function DeploymentTab() {
         <SectionHead
           kicker="roles"
           title="Turtle role assignment"
-          description="New turtles register as unassigned. Select a role from the console; the installer is blocked until a role is assigned."
+          description="New turtles register as unassigned. Choose both a role and a station; miners and haulers default to a built station, while station builders keep the anchor created at registration. The installer is blocked until the role is assigned."
         />
         {unassigned.length === 0 ? (
           <EmptyState
@@ -196,51 +199,15 @@ export function DeploymentTab() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {unassigned.map((turtle) => {
-                  const station = stations.find((s) => s.id === turtle.stationId);
-                  const [role, setRole] = useState("station_builder");
-                  return (
-                    <TableRow key={turtle.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <TurtleChip turtle={turtle} size="sm" />
-                          <span className="mono text-[10px]">{shortId(turtle.id)}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <span className="mono text-[10px] text-muted-foreground">
-                          {station ? stationLabel(station.index, station.id) : "—"}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="w-[140px]">
-                          <Select
-                            value={role}
-                            onValueChange={setRole}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="role" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="station_builder">Station Builder</SelectItem>
-                              <SelectItem value="miner">Miner</SelectItem>
-                              <SelectItem value="hauler">Hauler</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          size="xs"
-                          onClick={() => void assignRole(turtle.id, role)}
-                          disabled={assigning.has(turtle.id)}
-                        >
-                          {assigning.has(turtle.id) ? "…" : "Assign"}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                {unassigned.map((turtle) => (
+                  <PendingRoleRow
+                    key={turtle.id}
+                    turtle={turtle}
+                    stations={stations}
+                    assigning={assigning.has(turtle.id)}
+                    onAssign={assignRole}
+                  />
+                ))}
               </TableBody>
             </Table>
           </div>
@@ -433,6 +400,89 @@ export function DeploymentTab() {
         </div>
       </section>
     </div>
+  );
+}
+
+function PendingRoleRow({
+  turtle,
+  stations,
+  assigning,
+  onAssign,
+}: {
+  turtle: PublicTurtle;
+  stations: Station[];
+  assigning: boolean;
+  onAssign: (turtleId: string, role: string, stationId: string) => Promise<void>;
+}) {
+  const ownStation = stations.find((station) => station.id === turtle.stationId);
+  const builtStations = stations.filter(
+    (station) => station.built && station.id !== turtle.stationId,
+  );
+  const otherStations = stations
+    .filter((station) => station.id !== turtle.stationId)
+    .sort((a, b) => a.index - b.index);
+  const workStationId =
+    builtStations[0]?.id ?? otherStations[0]?.id ?? ownStation?.id ?? stations[0]?.id ?? "";
+  const [role, setRole] = useState("station_builder");
+  const [stationId, setStationId] = useState(ownStation?.id ?? workStationId);
+
+  const changeRole = (value: string) => {
+    setRole(value);
+    if (value === "station_builder") {
+      setStationId(ownStation?.id ?? workStationId);
+    } else {
+      setStationId(workStationId);
+    }
+  };
+
+  return (
+    <TableRow>
+      <TableCell>
+        <div className="flex items-center gap-2">
+          <TurtleChip turtle={turtle} size="sm" />
+          <span className="mono text-[10px]">{shortId(turtle.id)}</span>
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="w-[190px]">
+          <Select value={stationId} onValueChange={setStationId}>
+            <SelectTrigger>
+              <SelectValue placeholder="choose a station" />
+            </SelectTrigger>
+            <SelectContent>
+              {stations.map((station) => (
+                <SelectItem key={station.id} value={station.id}>
+                  {stationLabel(station.index, station.id)} · {station.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="w-[150px]">
+          <Select value={role} onValueChange={changeRole}>
+            <SelectTrigger>
+              <SelectValue placeholder="role" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="station_builder">Station Builder</SelectItem>
+              <SelectItem value="miner">Miner</SelectItem>
+              <SelectItem value="hauler">Hauler</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </TableCell>
+      <TableCell>
+        <Button
+          size="xs"
+          onClick={() => void onAssign(turtle.id, role, stationId)}
+          disabled={assigning || !stationId}
+        >
+          {assigning ? "…" : "Assign"}
+        </Button>
+      </TableCell>
+    </TableRow>
   );
 }
 

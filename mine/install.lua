@@ -187,6 +187,7 @@ while true do
     local data = jsonDecode(body)
     if type(data) == "table" and type(data.role) == "string" and data.role ~= "unassigned" then
       role = data.role
+      if type(data.station) == "table" then saved.station = data.station end
       break
     end
   end
@@ -194,6 +195,7 @@ while true do
 end
 
 print("role assigned: " .. role)
+print("station assigned: " .. tostring(saved.station and saved.station.id or "?"))
 saved.role = role
 writeFile(DEST .. "/identity.json", textutils.serializeJSON(saved))
 

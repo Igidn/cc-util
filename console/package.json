@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck -w web",
     "test": "tsx test/*.test.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "demo:turtles": "tsx scripts/demo-turtles.ts"
+    "demo:turtles": "tsx scripts/demo-turtles.ts",
+    "publish:runtime": "tsx scripts/publish-runtime.ts"
   },
   "dependencies": {
     "socket.io": "^4.8.4",
