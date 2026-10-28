@@ -69,6 +69,17 @@ describe("shaft queue", () => {
     assert.ok(!("ok" in rel) || !(rel as { ok: boolean }).ok);
   });
 
+  it("same holder re-acquire renews the TTL", () => {
+    reset();
+    acquireShaft("s0", "turtle-a");
+    const lock = store.data.shaftLocks["s0"];
+    lock.expiresAt = Date.now() - 1000;
+    const r = acquireShaft("s0", "turtle-a");
+    assert.ok("granted" in r);
+    assert.equal(lock.holderTurtleId, "turtle-a");
+    assert.ok((lock.expiresAt ?? 0) > Date.now());
+  });
+
   it("expireStaleLocks releases TTL-expired holder", () => {
     reset();
     acquireShaft("s0", "turtle-a");

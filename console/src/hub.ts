@@ -110,6 +110,7 @@ class Hub {
           turtleId: turtle.id,
           role: turtle.role,
           station: store.data.stations[turtle.stationId],
+          pose: turtle.pose ?? null,
           config: {
             reserve: config.reserve,
             maxTripBlocks: config.maxTripBlocks,

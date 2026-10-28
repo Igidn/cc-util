@@ -14,6 +14,7 @@ local nav = require("lib.nav")
 local hal = require("lib.hal")
 local gps = require("lib.gps")
 local shaft = require("lib.shaft")
+local tape = require("lib.tape")
 
 local M = {}
 
@@ -30,11 +31,17 @@ local function send(bus, msg)
   if bus and bus.send then bus.send(msg) end
 end
 
--- Keep the console's copy of our pose in sync while we move.
+-- Keep the console's copy of our pose in sync while we move. A long shaft
+-- traversal outlives the shaft lock's TTL, so the same hook renews the lock
+-- about once a minute instead of letting it expire mid-column.
 local function publish(bus, trip, stateName)
   if bus and trip then
     bus.pose = pose.copy(trip.pose)
     bus.state = stateName or bus.state
+    if trip.keepalive and os.time() >= (trip.keepaliveAt or 0) then
+      trip.keepaliveAt = os.time() + 60
+      trip.keepalive()
+    end
   end
 end
 
@@ -342,6 +349,9 @@ end
 
 local function descendToRoom(trip, geometry, bus)
   local shaftPose, roomPose = geometry.shaftPose, geometry.roomPose
+  -- Start every trip with a clean tape: the return is a retrace of this trip,
+  -- so the fuel invariant should only count the moves about to be made.
+  if trip.pose.y >= shaftPose.y then tape.clear(trip.tape) end
   local ok, err = moveHoriz(trip, shaftPose.x, shaftPose.z, bus)
   if not ok then return nil, err end
   if trip.pose.y < shaftPose.y then
@@ -351,22 +361,81 @@ local function descendToRoom(trip, geometry, bus)
   return moveVertical(trip, roomPose.y, "down", bus)
 end
 
-local function ascendToSurface(trip, geometry, bus)
-  local shaftPose, roomPose = geometry.shaftPose, geometry.roomPose
-  if trip.pose.y ~= roomPose.y then
-    local ok, err = moveVertical(trip, roomPose.y, trip.pose.y > roomPose.y and "down" or "up", bus)
-    if not ok then return nil, err end
+-- Top up from cargo before a long climb. Refuel one item at a time so we
+-- never burn more cargo than the climb actually needs.
+local function refuelFor(trip, target, what)
+  local fuel = hal.fuel()
+  if type(fuel) ~= "number" then return true end
+  local took = 0
+  while fuel < target and took < 64 do
+    if countFuel() == 0 then break end
+    local ok = hal.refuelFromInventory(1)
+    if not ok then break end
+    local nextFuel = hal.fuel()
+    if type(nextFuel) ~= "number" or nextFuel <= fuel then break end
+    fuel = nextFuel
+    took = took + 1
   end
-  local ok, err = moveHoriz(trip, shaftPose.x, shaftPose.z, bus)
+  if fuel < target then
+    return nil, ("not enough fuel to %s (have %d, need %d)"):format(what, fuel, target)
+  end
+  if took > 0 then
+    log(("refueled %d item(s) from cargo; fuel is now %d"):format(took, fuel))
+  end
+  return true
+end
+
+local function refuelForRetrace(trip)
+  return refuelFor(trip, tape.cost(trip.tape) + 16, "retrace the trip")
+end
+
+local function refuelForClimb(trip, distance)
+  -- Walking up grows the tape just like walking down, so the invariant wants
+  -- about twice the distance in fuel.
+  return refuelFor(trip, distance * 2 + 32, "climb out")
+end
+
+-- Undo the exact path we walked. A retrace costs one fuel per step; walking a
+-- fresh path up costs two per step under the fuel invariant, which stranded
+-- the hauler halfway up a 769-block shaft.
+local function ascendToSurface(trip, geometry, bus)
+  if tape.length(trip.tape) > 0 then
+    local ok, err = refuelForRetrace(trip)
+    if not ok then return nil, err end
+    while tape.length(trip.tape) > 0 do
+      ok, err = nav.retraceOne(trip)
+      if not ok then return nil, err end
+      publish(bus, trip)
+    end
+    return true
+  end
+  -- No tape (for example after a reboot inside the shaft): climb the column.
+  if trip.pose.y >= geometry.shaftPose.y then return true end
+  local ok, err = refuelForClimb(trip, geometry.shaftPose.y - trip.pose.y)
   if not ok then return nil, err end
-  return moveVertical(trip, shaftPose.y, "up", bus)
+  return moveVertical(trip, geometry.shaftPose.y, "up", bus)
 end
 
 -- Best effort after a failed delivery. Only climb when the hauler is already
 -- below the surface; at the surface there is nothing to recover from.
 local function recoverToSurface(trip, geometry, bus)
-  if trip.pose.y >= geometry.shaftPose.y then return true end
+  if trip.pose.y >= geometry.shaftPose.y then
+    tape.clear(trip.tape)
+    return true
+  end
   return ascendToSurface(trip, geometry, bus)
+end
+
+local function acquireShaft(trip, tunnel, stationId, turtleId, purpose)
+  if not shaft.acquire(tunnel, stationId, turtleId, purpose) then return false end
+  trip.keepalive = function() shaft.refresh(tunnel, stationId, turtleId) end
+  trip.keepaliveAt = 0
+  return true
+end
+
+local function releaseShaft(trip, tunnel, stationId, turtleId)
+  trip.keepalive = nil
+  return shaft.release(tunnel, stationId, turtleId)
 end
 
 ----------------------------------------------------------------------
@@ -400,27 +469,22 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
     return false
   end
 
-  -- Keep enough fuel to come back up. Take it one item at a time so the rest
-  -- of the load is still delivered to the refuel chest.
+  -- Keep enough fuel to descend and retrace back out. The descent invariant
+  -- charges the walk to the shaft as well, so budget for the full path.
   local depth = geometry.shaftPose.y - geometry.roomPose.y
-  local needed = depth * 2 + ASCENT_MARGIN
+  local walk = math.abs(geometry.shaftPose.x - trip.pose.x)
+    + math.abs(geometry.shaftPose.z - trip.pose.z)
+  local needed = (depth + walk) * 2 + ASCENT_MARGIN
   local fuel = hal.fuel()
-  local refuels = 0
-  while type(fuel) == "number" and fuel < needed and refuels < 64 do
-    if countFuel() == 0 then break end
-    local ok = hal.refuelFromInventory(1)
-    if not ok then break end
-    local nextFuel = hal.fuel()
-    if type(nextFuel) ~= "number" or nextFuel <= fuel then break end
-    fuel = nextFuel
-    refuels = refuels + 1
-  end
-  if type(fuel) == "number" and fuel < needed then
-    log(("not enough fuel for the round trip (have %d, need %d)"):format(fuel, needed))
-    return false
+  if type(fuel) == "number" and fuel >= needed then
+    log(("fuel %d is enough for the round trip (%d); not refueling"):format(fuel, needed))
+  else
+    local ok, err = refuelFor(trip, needed, "make the round trip")
+    if not ok then log(err) return false end
+    fuel = hal.fuel()
   end
 
-  if not shaft.acquire(tunnel, stationId, turtleId, "fuel_delivery") then
+  if not acquireShaft(trip, tunnel, stationId, turtleId, "fuel_delivery") then
     log("could not acquire shaft for fuel delivery")
     return false
   end
@@ -428,11 +492,11 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
   bus.state = "descending with fuel"
   local ok, err = descendToRoom(trip, geometry, bus)
   if not ok then
-    shaft.release(tunnel, stationId, turtleId)
     log("fuel descent failed:", err)
     -- Never leave the hauler stranded halfway down the shaft.
     local aok, aerr = recoverToSurface(trip, geometry, bus)
     if not aok then log("could not return to the surface:", aerr) end
+    releaseShaft(trip, tunnel, stationId, turtleId)
     return false
   end
 
@@ -446,10 +510,10 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
     end
   end
   if not ok then
-    shaft.release(tunnel, stationId, turtleId)
     log("could not reach the refuel chest:", err)
     local aok, aerr = recoverToSurface(trip, geometry, bus)
     if not aok then log("could not return to the surface:", aerr) end
+    releaseShaft(trip, tunnel, stationId, turtleId)
     return false
   end
 
@@ -459,15 +523,18 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
 
   bus.state = "ascending"
   ok, err = ascendToSurface(trip, geometry, bus)
-  shaft.release(tunnel, stationId, turtleId)
+  releaseShaft(trip, tunnel, stationId, turtleId)
   if not ok then
     log("fuel ascent failed:", err)
     return false
   end
 
-  -- Park clear of the shaft and the fuel chest.
-  local parkX = geometry.shaftPose.x + 1
-  moveHoriz(trip, parkX, geometry.shaftPose.z, bus)
+  -- The retrace returns us to where the trip started, usually between the
+  -- surface chests. Only step aside if that happens to be the shaft mouth.
+  if trip.pose.x == geometry.shaftPose.x and trip.pose.z == geometry.shaftPose.z then
+    moveHoriz(trip, geometry.shaftPose.x + 1, geometry.shaftPose.z, bus)
+  end
+  tape.clear(trip.tape)
   bus.state = "waiting"
   return dropped > 0
 end
@@ -501,7 +568,7 @@ local function moveItemsUp(tunnel, stationId, turtleId, trip, geometry, chests, 
     return false
   end
 
-  if not shaft.acquire(tunnel, stationId, turtleId, "item_delivery") then
+  if not acquireShaft(trip, tunnel, stationId, turtleId, "item_delivery") then
     log("could not acquire shaft for item delivery")
     return false
   end
@@ -515,28 +582,31 @@ local function moveItemsUp(tunnel, stationId, turtleId, trip, geometry, chests, 
     end
   end
   if not ok then
-    shaft.release(tunnel, stationId, turtleId)
     log("could not reach storage:", err)
+    local aok, aerr = recoverToSurface(trip, geometry, bus)
+    if not aok then log("could not return to the surface:", aerr) end
+    releaseShaft(trip, tunnel, stationId, turtleId)
     return false
   end
 
   local collected = suckBelow(64)
   log("collected", collected, "items from storage")
   if collected == 0 then
-    shaft.release(tunnel, stationId, turtleId)
+    recoverToSurface(trip, geometry, bus)
+    releaseShaft(trip, tunnel, stationId, turtleId)
     return false
   end
 
   bus.state = "hauling items up"
   ok, err = ascendToSurface(trip, geometry, bus)
+  releaseShaft(trip, tunnel, stationId, turtleId)
   if not ok then
-    shaft.release(tunnel, stationId, turtleId)
     log("item ascent failed:", err)
     return false
   end
 
   local dropped = dropIntoDepot(trip, depot, bus)
-  shaft.release(tunnel, stationId, turtleId)
+  tape.clear(trip.tape)
   log("dropped", dropped, "items into the depot chest")
   bus.state = "waiting"
   return dropped > 0
@@ -590,27 +660,54 @@ function M.run(id, bus)
     return nil, "no server URL"
   end
 
-  local stationId = bus.station and bus.station.id or "s0"
-  local turtleId = id
-
-  -- GPS is available at the surface, which is where the hauler starts.
-  local startPose = pose.copy(bus.pose or { x = 0, y = 0, z = 0, f = 0 })
-  local gok = gps.syncPose(startPose, hal, true)
-  if gok then
-    log("GPS synced at", startPose.x, startPose.y, startPose.z)
-  else
-    log("GPS unavailable; working from the last known pose")
-  end
-
+  -- Wait for the welcome first: it carries the station geometry and the
+  -- console's last known pose, which is the only fallback when GPS is down.
   local geometry = stationGeometry(bus)
   if not geometry then
     log("station geometry never arrived; is the station built?")
     return nil, "station geometry missing"
   end
+  local stationId = geometry.id or (bus.station and bus.station.id) or "s0"
+  local turtleId = id
   log("station", stationId, "shaft top", geometry.shaftPose.y)
+
+  -- GPS is available almost everywhere above bedrock; prefer it over the
+  -- server's stored pose.
+  local startPose = pose.copy(bus.pose or { x = 0, y = 0, z = 0, f = 0 })
+  local gok = gps.syncPose(startPose, hal, true)
+  if gok then
+    log("GPS synced at", startPose.x, startPose.y, startPose.z)
+  else
+    log("GPS unavailable; working from the last known pose", startPose.x, startPose.y, startPose.z)
+  end
 
   local trip = nav.new(hal, nil, 0, startPose, true)
   publish(bus, trip, "waiting")
+
+  -- A reboot inside the shaft loses the in-memory tape, so the normal retrace
+  -- cannot happen. Climb the column first (refueling from cargo) and only then
+  -- enter the delivery loop.
+  if trip.pose.y < geometry.shaftPose.y then
+    if trip.pose.x ~= geometry.shaftPose.x or trip.pose.z ~= geometry.shaftPose.z then
+      log(("starting at Y%d away from the shaft; manual recovery needed"):format(trip.pose.y))
+      return nil, "underground off-shaft"
+    end
+    log(("starting at Y%d inside the shaft; climbing to the surface"):format(trip.pose.y))
+    bus.state = "recovering"
+    if not acquireShaft(trip, tunnel, stationId, turtleId, "recovery") then
+      log("could not acquire the shaft to climb out")
+      return nil, "shaft busy"
+    end
+    local ok, err = refuelForClimb(trip, geometry.shaftPose.y - trip.pose.y)
+    if ok then ok, err = moveVertical(trip, geometry.shaftPose.y, "up", bus) end
+    releaseShaft(trip, tunnel, stationId, turtleId)
+    if not ok then
+      log("could not climb out of the shaft:", err)
+      return nil, err
+    end
+    tape.clear(trip.tape)
+    log("back at the surface")
+  end
 
   -- Do not park yet: the hauler usually boots between the two surface chests,
   -- and the one it faces is the fuel chest. Loading it in place is faster and

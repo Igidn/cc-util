@@ -19,8 +19,11 @@ export function acquireShaft(stationId: string, turtleId: string): { granted: tr
     store.data.shaftLocks[stationId] = lock;
   }
 
-  // Already holding the lock.
+  // Already holding the lock. This is also the keepalive path for a long
+  // traversal: renew the TTL so a 769-block round trip never expires it.
   if (lock.holderTurtleId === turtleId) {
+    lock.expiresAt = Date.now() + SHAFT_TTL_MS;
+    store.save();
     return { granted: true };
   }
 

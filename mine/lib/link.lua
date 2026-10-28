@@ -51,6 +51,9 @@ function M.run(identity, bus)
       bus.config = msg.config or bus.config
       bus.serverTime = msg.serverTime
       bus.turtleId = msg.turtleId
+      -- The server's last known pose is the only starting point when GPS is
+      -- unavailable (for example when rebooting halfway up a shaft).
+      if msg.pose and not bus.pose then bus.pose = msg.pose end
       if msg.role then bus.role = msg.role end
       if msg.mission and not bus.mission and not bus.blocked then bus.mission = msg.mission end
       util.log("link: connected as", bus.turtleId or identity.id, "role", bus.role)

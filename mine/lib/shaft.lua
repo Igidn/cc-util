@@ -92,6 +92,23 @@ function M.acquire(tunnel, stationId, turtleId, purpose)
   return nil
 end
 
+-- Renew the shaft lock while a long traversal is still in progress. The server
+-- extends the holder's TTL when the holder asks to acquire again.
+function M.refresh(tunnel, stationId, turtleId)
+  local text = httpPostJson(tunnel .. "/api/shaft/" .. stationId .. "/acquire", {
+    turtleId = turtleId,
+    purpose = "keepalive",
+  })
+  if not text then
+    util.log("shaft: keepalive failed")
+    return false
+  end
+  local data = util.jsonDecode(text)
+  if data and data.granted then return true end
+  util.log("shaft: keepalive lost the lock")
+  return false
+end
+
 -- Release shaft access. Promotes the next waiter if any.
 -- @return true on success
 function M.release(tunnel, stationId, turtleId)

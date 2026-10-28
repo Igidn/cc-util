@@ -505,11 +505,12 @@ function mock.refuel()
   if item.name == "minecraft:coal" or item.name == "minecraft:lava_bucket" then
     local add = item.name == "minecraft:coal" and 100 or 1000
     item.count = item.count - 1
-    if item.count <= 0 then mock.turtle.inventory[slot] = nil end
-    mock.turtle.fuel = mock.turtle.fuel + add
-    if item.name == "minecraft:lava_bucket" then
-      mock.turtle.inventory[slot] = { name = "minecraft:bucket", count = 1 }
+    if item.count <= 0 then
+      -- A spent lava bucket leaves an empty bucket behind.
+      mock.turtle.inventory[slot] = item.name == "minecraft:lava_bucket"
+        and { name = "minecraft:bucket", count = 1 } or nil
     end
+    mock.turtle.fuel = mock.turtle.fuel + add
     return true
   end
   return false, "Not fuel"
@@ -1080,6 +1081,139 @@ do
   local result = station_builder.run("test-builder", bus)
   check("builder hands over instead of rebuilding", result == "transition_to_hauler", tostring(result))
   check("builder did not dig the world", getBlock(0, 4, 0) == before)
+end
+
+-- ============================================================================
+-- TEST 5e: Deep shaft round trip must retrace, not walk up
+-- (regression: walking up grows the tape and needs twice the fuel)
+-- ============================================================================
+
+do
+  print("\n== TEST 5e: Deep shaft round trip uses the retrace ==")
+  resetWorld(STONE)
+  resetState()
+
+  for y = -60, 1 do setAir(0, y, 0) end
+  for x = -1, 5 do
+    for z = -2, 4 do
+      setAir(x, -59, z)
+      setAir(x, -58, z)
+    end
+  end
+  setBlock(0, 0, -1, CHEST)
+  chestInv[wkey(0, 0, -1)] = { ["minecraft:lava_bucket"] = 4 }
+  setBlock(3, -60, 2, CHEST)
+  chestInv[wkey(3, -60, 2)] = {}
+
+  -- Just enough for the descent plus the retrace, far less than walking up.
+  resetTurtle(0, 0, 0, 0, 193)
+
+  local chests = {
+    { id = "fuel", kind = "fuel", pose = { x = 0, y = 0, z = -1, f = 0 } },
+    { id = "refuel", kind = "refuel", pose = { x = 3, y = -60, z = 2, f = 0 } },
+  }
+  httpRoutes["/api/chests?stationId=s0"] = function()
+    return 200, textutils.serializeJSON({ ok = true, chests = chests })
+  end
+  httpRoutes["/api/requests?stationId=s0&status=pending"] = function()
+    return 200, textutils.serializeJSON({ ok = true, requests = {} })
+  end
+  httpPostRoutes["/api/shaft/s0/acquire"] = function()
+    return 200, textutils.serializeJSON({ ok = true, granted = true })
+  end
+  httpPostRoutes["/api/shaft/s0/release"] = function()
+    return 200, textutils.serializeJSON({ ok = true })
+  end
+
+  local bus = {
+    serverUrl = "http://sim",
+    station = {
+      id = "s0",
+      shaftPose = { x = 0, y = 0, z = 0, f = 0 },
+      roomPose = { x = 0, y = -59, z = 0, f = 0 },
+      dockPose = { x = 0, y = -59, z = 1, f = 0 },
+    },
+    pose = { x = 0, y = 0, z = 0, f = 0 },
+    role = "hauler",
+    turtleId = "test-hauler",
+  }
+  mock.onDropDown = function(x, y, z)
+    if x == 3 and y == -60 and z == 2 then bus.role = "miner" end
+  end
+  local ok, err = hauler.run("test-hauler", bus)
+  mock.onDropDown = nil
+
+  check("deep hauler run returned", ok == nil or ok == true, tostring(err))
+  check("deep refuel chest received all 4",
+    (chestInv[wkey(3, -60, 2)]["minecraft:lava_bucket"] or 0) == 4,
+    tostring(chestInv[wkey(3, -60, 2)]["minecraft:lava_bucket"]))
+  check("deep hauler returned to the surface", mock.turtle.y == 0, "at Y" .. mock.turtle.y)
+end
+
+-- ============================================================================
+-- TEST 5f: A reboot inside the shaft climbs out and refuels from cargo
+-- ============================================================================
+
+do
+  print("\n== TEST 5f: Hauler recovers from mid-shaft and refuels itself ==")
+  resetWorld(STONE)
+  resetState()
+
+  for y = -60, 1 do setAir(0, y, 0) end
+  for x = -1, 5 do
+    for z = -2, 4 do
+      setAir(x, -59, z)
+      setAir(x, -58, z)
+    end
+  end
+  setBlock(0, 0, -1, CHEST)
+  chestInv[wkey(0, 0, -1)] = { ["minecraft:lava_bucket"] = 4 }
+  setBlock(3, -60, 2, CHEST)
+  chestInv[wkey(3, -60, 2)] = {}
+
+  -- Boot at Y-30 with only enough fuel for the climb out, no cargo.
+  resetTurtle(0, -30, 0, 0, 100)
+
+  local chests = {
+    { id = "fuel", kind = "fuel", pose = { x = 0, y = 0, z = -1, f = 0 } },
+    { id = "refuel", kind = "refuel", pose = { x = 3, y = -60, z = 2, f = 0 } },
+  }
+  httpRoutes["/api/chests?stationId=s0"] = function()
+    return 200, textutils.serializeJSON({ ok = true, chests = chests })
+  end
+  httpRoutes["/api/requests?stationId=s0&status=pending"] = function()
+    return 200, textutils.serializeJSON({ ok = true, requests = {} })
+  end
+  httpPostRoutes["/api/shaft/s0/acquire"] = function()
+    return 200, textutils.serializeJSON({ ok = true, granted = true })
+  end
+  httpPostRoutes["/api/shaft/s0/release"] = function()
+    return 200, textutils.serializeJSON({ ok = true })
+  end
+
+  local bus = {
+    serverUrl = "http://sim",
+    station = {
+      id = "s0",
+      shaftPose = { x = 0, y = 0, z = 0, f = 0 },
+      roomPose = { x = 0, y = -59, z = 0, f = 0 },
+      dockPose = { x = 0, y = -59, z = 1, f = 0 },
+    },
+    pose = { x = 0, y = -30, z = 0, f = 0 },
+    role = "hauler",
+    turtleId = "test-hauler",
+  }
+  mock.onDropDown = function(x, y, z)
+    if x == 3 and y == -60 and z == 2 then bus.role = "miner" end
+  end
+  local ok, err = hauler.run("test-hauler", bus)
+  mock.onDropDown = nil
+
+  check("recovery run returned", ok == nil or ok == true, tostring(err))
+  check("refueled one bucket and delivered the other three",
+    (chestInv[wkey(3, -60, 2)]["minecraft:lava_bucket"] or 0) == 3,
+    tostring(chestInv[wkey(3, -60, 2)]["minecraft:lava_bucket"]))
+  check("recovery ended at the surface", mock.turtle.y == 0, "at Y" .. mock.turtle.y)
 end
 
 -- ============================================================================
