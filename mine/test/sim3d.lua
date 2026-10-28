@@ -408,6 +408,33 @@ function mock.getItemDetail(slot)
   return true, { name = item.name, count = item.count }
 end
 
+function mock.suck(count)
+  local t = mock.turtle
+  local x, y, z = t.x + DX[t.f], t.y, t.z + DZ[t.f]
+  if getBlock(x, y, z) ~= CHEST then return false, "Nothing" end
+  local inv = chestInv[wkey(x, y, z)]
+  if not inv then return false, "Nothing" end
+  local itemName, have
+  for name, n in pairs(inv) do
+    itemName, have = name, n
+    break
+  end
+  if not itemName or have <= 0 then return false, "Nothing" end
+  local take = math.min(have, count or 64)
+  inv[itemName] = have - take
+  if inv[itemName] <= 0 then inv[itemName] = nil end
+  local slot
+  for i = 1, 16 do
+    local item = t.inventory[i]
+    if item and item.name == itemName then slot = i; break end
+    if not item and not slot then slot = i end
+  end
+  if not slot then return false, "No space" end
+  local item = t.inventory[slot]
+  t.inventory[slot] = { name = itemName, count = (item and item.count or 0) + take }
+  return true
+end
+
 function mock.dropDown()
   local slot = mock.turtle.selected
   local item = mock.turtle.inventory[slot]
@@ -423,6 +450,7 @@ function mock.dropDown()
   chestInv[k] = chestInv[k] or {}
   chestInv[k][item.name] = (chestInv[k][item.name] or 0) + item.count
   mock.turtle.inventory[slot] = nil
+  if mock.onDropDown then mock.onDropDown(x, y, z, item.name) end
   return true
 end
 
@@ -909,6 +937,130 @@ do
     and not src:find("parkAtWaitPosition", 1, true), "old parking code still present")
   check("uses the reported shaft geometry", src:find("shaftPose", 1, true) ~= nil, "no shaftPose use")
   check("targets the room refuel chest", src:find("refuel", 1, true) ~= nil, "no refuel target")
+end
+
+-- ============================================================================
+-- TEST 5b: Hauler opens the chest in front, descends, and fills the refuel chest
+-- ============================================================================
+
+do
+  print("\n== TEST 5b: Hauler front-chest fuel delivery ==")
+  resetWorld(STONE)
+  resetState()
+
+  -- Flat surface plaza at Y0; the shaft goes down to the room at Y-10.
+  for x = -2, 5 do
+    for z = -3, 4 do
+      setAir(x, 0, z)
+      setAir(x, 1, z)
+    end
+  end
+  for y = -10, 0 do setAir(0, y, 0) end
+  for x = -1, 5 do
+    for z = -2, 4 do
+      setAir(x, -10, z)
+      setAir(x, -9, z)
+    end
+  end
+
+  -- Surface layout: fuel chest in front (north), depot behind (south).
+  setBlock(0, 0, -1, CHEST)
+  chestInv[wkey(0, 0, -1)] = { ["minecraft:lava_bucket"] = 4 }
+  setBlock(0, 0, 1, CHEST)
+  chestInv[wkey(0, 0, 1)] = {}
+  -- Refuel chest in the room, one block below the walking level.
+  setBlock(3, -10, 2, CHEST)
+  chestInv[wkey(3, -10, 2)] = {}
+
+  resetTurtle(0, 0, 0, 0, 100000)
+
+  local chests = {
+    { id = "fuel", kind = "fuel", pose = { x = 0, y = 0, z = -1, f = 0 } },
+    { id = "depot", kind = "depot", pose = { x = 0, y = 0, z = 1, f = 0 } },
+    { id = "refuel", kind = "refuel", pose = { x = 3, y = -10, z = 2, f = 0 } },
+  }
+  httpRoutes["/api/chests?stationId=s0"] = function()
+    return 200, textutils.serializeJSON({ ok = true, chests = chests })
+  end
+  httpRoutes["/api/requests?stationId=s0&status=pending"] = function()
+    return 200, textutils.serializeJSON({ ok = true, requests = {} })
+  end
+  httpPostRoutes["/api/shaft/s0/acquire"] = function()
+    return 200, textutils.serializeJSON({ ok = true, granted = true })
+  end
+  httpPostRoutes["/api/shaft/s0/release"] = function()
+    return 200, textutils.serializeJSON({ ok = true })
+  end
+
+  local bus = {
+    serverUrl = "http://sim",
+    station = {
+      id = "s0",
+      shaftPose = { x = 0, y = 0, z = 0, f = 0 },
+      roomPose = { x = 0, y = -9, z = 0, f = 0 },
+      dockPose = { x = 0, y = -9, z = 1, f = 0 },
+    },
+    pose = { x = 0, y = 0, z = 0, f = 0 },
+    role = "hauler",
+    turtleId = "test-hauler",
+  }
+
+  -- Stop the run loop once the lava has reached the refuel chest.
+  mock.onDropDown = function(x, y, z)
+    if x == 3 and y == -10 and z == 2 then bus.role = "miner" end
+  end
+  local ok, err = hauler.run("test-hauler", bus)
+  mock.onDropDown = nil
+
+  check("hauler run returned", ok == nil or ok == true, tostring(err))
+  check("fuel chest emptied",
+    (chestInv[wkey(0, 0, -1)]["minecraft:lava_bucket"] or 0) == 0,
+    tostring(chestInv[wkey(0, 0, -1)]["minecraft:lava_bucket"]))
+  check("refuel chest received the lava",
+    (chestInv[wkey(3, -10, 2)]["minecraft:lava_bucket"] or 0) == 4,
+    tostring(chestInv[wkey(3, -10, 2)]["minecraft:lava_bucket"]))
+  check("hauler returned to the surface", mock.turtle.y == 0, "at Y" .. mock.turtle.y)
+end
+
+-- ============================================================================
+-- TEST 5c: Hauler parked beside the shaft walks around the fuel chest
+-- (regression: the old east-then-north walk stepped through the chest)
+-- ============================================================================
+
+do
+  print("\n== TEST 5c: Hauler walks around the fuel chest to reach the shaft ==")
+  resetState()
+  chestInv[wkey(0, 0, -1)] = { ["minecraft:lava_bucket"] = 3 }
+  chestInv[wkey(3, -10, 2)] = {}
+  resetTurtle(1, 0, 0, 0, 100000)
+
+  local bus = {
+    serverUrl = "http://sim",
+    station = {
+      id = "s0",
+      shaftPose = { x = 0, y = 0, z = 0, f = 0 },
+      roomPose = { x = 0, y = -9, z = 0, f = 0 },
+      dockPose = { x = 0, y = -9, z = 1, f = 0 },
+    },
+    pose = { x = 1, y = 0, z = 0, f = 0 },
+    role = "hauler",
+    turtleId = "test-hauler",
+  }
+
+  mock.onDropDown = function(x, y, z)
+    if x == 3 and y == -10 and z == 2 then bus.role = "miner" end
+  end
+  local ok, err = hauler.run("test-hauler", bus)
+  mock.onDropDown = nil
+
+  check("hauler run returned", ok == nil or ok == true, tostring(err))
+  check("fallback fuel chest emptied",
+    (chestInv[wkey(0, 0, -1)]["minecraft:lava_bucket"] or 0) == 0,
+    tostring(chestInv[wkey(0, 0, -1)]["minecraft:lava_bucket"]))
+  check("refuel chest received the fallback lava",
+    (chestInv[wkey(3, -10, 2)]["minecraft:lava_bucket"] or 0) == 3,
+    tostring(chestInv[wkey(3, -10, 2)]["minecraft:lava_bucket"]))
+  check("hauler returned to the surface", mock.turtle.y == 0, "at Y" .. mock.turtle.y)
 end
 
 -- ============================================================================

@@ -101,47 +101,73 @@ local function faceCell(trip, x, z)
   return nav.face(trip, dz > 0 and 2 or 0)
 end
 
--- Walk on one level. Never digs: the room and surface are supposed to be open.
-local function moveHoriz(trip, x, z, bus)
-  local dx = x - trip.pose.x
-  if dx > 0 then
-    if not nav.face(trip, 1) then return nil, "face east failed" end
-  elseif dx < 0 then
-    if not nav.face(trip, 3) then return nil, "face west failed" end
-  end
-  for _ = 1, math.abs(dx) do
-    local ok, err = nav.step(trip, "forward")
+-- One non-digging step along an axis. The caller decides which axis to try.
+local function stepAxis(trip, axis, delta, bus)
+  local ok, err
+  if axis == "x" then
+    ok, err = nav.face(trip, delta > 0 and 1 or 3)
+    if ok then ok, err = nav.step(trip, "forward") end
     if not ok then return nil, "east/west blocked: " .. tostring(err) end
-    publish(bus, trip)
-  end
-  local dz = z - trip.pose.z
-  if dz > 0 then
-    if not nav.face(trip, 2) then return nil, "face south failed" end
-  elseif dz < 0 then
-    if not nav.face(trip, 0) then return nil, "face north failed" end
-  end
-  for _ = 1, math.abs(dz) do
-    local ok, err = nav.step(trip, "forward")
+  else
+    ok, err = nav.face(trip, delta > 0 and 2 or 0)
+    if ok then ok, err = nav.step(trip, "forward") end
     if not ok then return nil, "north/south blocked: " .. tostring(err) end
-    publish(bus, trip)
+  end
+  publish(bus, trip)
+  return true
+end
+
+-- Walk on one level. Never digs: the room and surface are supposed to be open.
+-- Prefer the axis with the most distance left, but switch axes when the next
+-- block is in the way. That matters at the surface: the fuel chest sits beside
+-- the shaft, so a straight east-then-north walk would try to step through it.
+local function moveHoriz(trip, x, z, bus)
+  local guard = 0
+  while trip.pose.x ~= x or trip.pose.z ~= z do
+    guard = guard + 1
+    if guard > 512 then return nil, "walk did not converge" end
+    local dx, dz = x - trip.pose.x, z - trip.pose.z
+    local order
+    if math.abs(dx) >= math.abs(dz) then
+      order = { { "x", dx }, { "z", dz } }
+    else
+      order = { { "z", dz }, { "x", dx } }
+    end
+    local moved, lastErr = false, nil
+    for _, step in ipairs(order) do
+      if step[2] ~= 0 then
+        local ok, err = stepAxis(trip, step[1], step[2], bus)
+        if ok then
+          moved = true
+          break
+        end
+        lastErr = err
+      end
+    end
+    if not moved then return nil, lastErr or "no path" end
   end
   return true
 end
 
--- Move vertically inside the shaft. Refuses hazards and refuses to dig, so a
--- blocked shaft stops the hauler instead of carving through the room.
+-- Move vertically inside the shaft. Refuses hazards. A block that somehow
+-- ended up in the shaft is cleared, because the column is known to be open and
+-- the hauler must not strand itself halfway down.
 local function moveVertical(trip, targetY, dir, bus)
   local dy = targetY - trip.pose.y
   if dy == 0 then return true end
   local steps = math.abs(dy)
   for _ = 1, steps do
+    local nextY = trip.pose.y + (dir == "down" and -1 or 1)
     local data = dir == "down" and hal.inspectDown() or hal.inspectUp()
     if data and hal.hazard(data) then
-      return nil, "hazard in the shaft at Y" .. (trip.pose.y + (dir == "down" and -1 or 1))
+      return nil, "hazard in the shaft at Y" .. nextY
     end
     if data and not hal.passable(data) then
-      return nil, ("shaft blocked at Y%d by %s"):format(
-        trip.pose.y + (dir == "down" and -1 or 1), data.name or "?")
+      local dok, derr
+      if dir == "down" then dok, derr = hal.digDown() else dok, derr = hal.digUp() end
+      if not dok then
+        return nil, ("shaft blocked at Y%d by %s"):format(nextY, data.name or tostring(derr))
+      end
     end
     local ok, err
     if dir == "down" then ok, err = nav.down(trip, 1) else ok, err = nav.up(trip, 1) end
@@ -165,6 +191,49 @@ local function countFuel()
     end
   end
   return count, slots
+end
+
+-- Count items by name so we can tell exactly what a suck() call just pulled in.
+local function countByName()
+  local counts = {}
+  for slot = 1, 16 do
+    local item = hal.itemDetail(slot)
+    if item and item.name then
+      counts[item.name] = (counts[item.name] or 0) + (item.count or 1)
+    end
+  end
+  return counts
+end
+
+-- Open the chest directly in front of the hauler and keep the fuel. This is
+-- the intended way to load at the surface: the builder leaves the hauler
+-- between the fuel chest (front) and the depot (back), so no walking is needed
+-- and the hauler never has to squeeze past the chest to reach the shaft.
+-- Non-fuel contents stop the load; the one pulled item is left for the depot.
+local function suckFuelFront(limit)
+  local seen = hal.inspect()
+  if not (seen and seen.name and seen.name:find("chest")) then return 0 end
+  local got = 0
+  for _ = 1, limit or 64 do
+    local before = countByName()
+    if not hal.suck() then break end
+    local after = countByName()
+    local picked
+    for name, count in pairs(after) do
+      if count > (before[name] or 0) then
+        picked = name
+        break
+      end
+    end
+    if not picked then break end
+    if not hal.isFuel(picked) then
+      log("front chest holds", picked, "not fuel; stopping")
+      break
+    end
+    got = got + 1
+  end
+  if got > 0 then log("loaded", got, "items of fuel from the chest in front") end
+  return got
 end
 
 -- Pull from the chest in front of the turtle until it stops giving.
@@ -293,6 +362,13 @@ local function ascendToSurface(trip, geometry, bus)
   return moveVertical(trip, shaftPose.y, "up", bus)
 end
 
+-- Best effort after a failed delivery. Only climb when the hauler is already
+-- below the surface; at the surface there is nothing to recover from.
+local function recoverToSurface(trip, geometry, bus)
+  if trip.pose.y >= geometry.shaftPose.y then return true end
+  return ascendToSurface(trip, geometry, bus)
+end
+
 ----------------------------------------------------------------------
 -- Fuel delivery (down)
 ----------------------------------------------------------------------
@@ -305,14 +381,20 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
     return false
   end
 
-  -- Top up from the surface chest when there is one, otherwise use whatever
-  -- lava the operator loaded into the hauler.
-  if fuelChest and trip.pose.y >= geometry.shaftPose.y then
+  -- Load lava from the chest directly in front first. This is the normal
+  -- surface layout: the builder parks the hauler between the fuel chest and
+  -- the depot, so opening the front chest needs no walking at all.
+  local carried = countFuel()
+  if carried == 0 and trip.pose.y >= geometry.shaftPose.y then
+    carried = suckFuelFront(64)
+  end
+  -- Fall back to the registered fuel chest if the hauler is not facing it
+  -- (for example after parking beside the shaft).
+  if carried == 0 and fuelChest and trip.pose.y >= geometry.shaftPose.y then
     local got = suckFromChest(trip, fuelChest, bus)
     if got == 0 then log("surface fuel chest is empty or unreachable") end
+    carried = countFuel()
   end
-
-  local carried = countFuel()
   if carried == 0 then
     log("no fuel in inventory; nothing to deliver")
     return false
@@ -348,6 +430,9 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
   if not ok then
     shaft.release(tunnel, stationId, turtleId)
     log("fuel descent failed:", err)
+    -- Never leave the hauler stranded halfway down the shaft.
+    local aok, aerr = recoverToSurface(trip, geometry, bus)
+    if not aok then log("could not return to the surface:", aerr) end
     return false
   end
 
@@ -363,6 +448,8 @@ local function deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, 
   if not ok then
     shaft.release(tunnel, stationId, turtleId)
     log("could not reach the refuel chest:", err)
+    local aok, aerr = recoverToSurface(trip, geometry, bus)
+    if not aok then log("could not return to the surface:", aerr) end
     return false
   end
 
@@ -525,8 +612,9 @@ function M.run(id, bus)
   local trip = nav.new(hal, nil, 0, startPose, true)
   publish(bus, trip, "waiting")
 
-  -- Park beside the shaft so we do not block a miner's transit.
-  moveHoriz(trip, geometry.shaftPose.x + 1, geometry.shaftPose.z, bus)
+  -- Do not park yet: the hauler usually boots between the two surface chests,
+  -- and the one it faces is the fuel chest. Loading it in place is faster and
+  -- avoids walking around a chest that sits beside the shaft.
 
   local fuelRetryAt = 0
 
@@ -541,7 +629,14 @@ function M.run(id, bus)
     if carried > 0 or fuelChest then
       if os.time() >= fuelRetryAt then
         local ok = deliverFuel(tunnel, stationId, turtleId, trip, geometry, chests, bus)
-        if not ok then fuelRetryAt = os.time() + 60 end
+        if not ok then
+          fuelRetryAt = os.time() + 60
+          -- Waiting on the shaft mouth would block a miner, so step aside when
+          -- the delivery could not start.
+          if trip.pose.y >= geometry.shaftPose.y then
+            moveHoriz(trip, geometry.shaftPose.x + 1, geometry.shaftPose.z, bus)
+          end
+        end
       end
     end
 
